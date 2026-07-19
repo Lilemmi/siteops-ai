@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {StructuredReport} from '../types/report';
+import {getLocalizedReport} from './contentLocalization';
+import {translateFields} from './translationService';
 
 const TASK_STATUS_KEY = '@siteops/task-status/v1';
 const MANUAL_TASKS_KEY = '@siteops/manual-tasks/v1';
@@ -31,6 +33,7 @@ export interface SiteTask {
   reportId?: string;
   createdAt: string;
   updatedAt: string;
+  translations?: Partial<Record<'en' | 'ru' | 'he', Pick<TaskDraft, 'title' | 'site' | 'location' | 'due' | 'description' | 'assignee'>>>;
 }
 
 export type TaskDraft = Pick<
@@ -80,12 +83,21 @@ export async function saveManualTask(draft: TaskDraft, id?: string): Promise<Sit
   const now = new Date().toISOString();
   const tasks = await readManualTasks();
   const existing = id ? tasks.find(task => task.id === id) : undefined;
+  const translations = await translateFields({
+    title: draft.title,
+    site: draft.site,
+    location: draft.location,
+    due: draft.due,
+    description: draft.description,
+    assignee: draft.assignee,
+  });
   const task: SiteTask = {
     id: existing?.id ?? `manual-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     source: 'manual',
     reportId: existing?.reportId,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
+    translations: translations ?? existing?.translations,
     ...draft,
   };
 
@@ -122,11 +134,12 @@ function reportBase(report: StructuredReport): Pick<
   };
 }
 
-function buildReportTasks(reports: StructuredReport[], statuses: Record<string, TaskStatus>): SiteTask[] {
+function buildReportTasks(reports: StructuredReport[], statuses: Record<string, TaskStatus>, language = 'en'): SiteTask[] {
   const tasks: SiteTask[] = [];
 
   reports.forEach(report => {
-    report.missingMaterials.forEach((item, index) => {
+    const localized = getLocalizedReport(report, language);
+    localized.missingMaterials.forEach((item, index) => {
       const id = `${report.id}-material-${index}`;
       tasks.push({
         id,
@@ -135,13 +148,13 @@ function buildReportTasks(reports: StructuredReport[], statuses: Record<string, 
         priority: 'HIGH',
         status: statuses[id] ?? 'Open',
         due: 'Today',
-        description: report.financialImpact || report.summary,
+        description: localized.financialImpact || localized.summary,
         assignee: '',
         ...reportBase(report),
       });
     });
 
-    report.delays.forEach((item, index) => {
+    localized.delays.forEach((item, index) => {
       const id = `${report.id}-delay-${index}`;
       tasks.push({
         id,
@@ -150,13 +163,13 @@ function buildReportTasks(reports: StructuredReport[], statuses: Record<string, 
         priority: 'MEDIUM',
         status: statuses[id] ?? 'In Progress',
         due: 'Tomorrow',
-        description: item.impact || report.summary,
+        description: item.impact || localized.summary,
         assignee: '',
         ...reportBase(report),
       });
     });
 
-    report.nextDayTasks.slice(0, 4).forEach((title, index) => {
+    localized.nextDayTasks.slice(0, 4).forEach((title, index) => {
       const id = `${report.id}-next-${index}`;
       tasks.push({
         id,
@@ -165,7 +178,7 @@ function buildReportTasks(reports: StructuredReport[], statuses: Record<string, 
         priority: 'LOW',
         status: statuses[id] ?? 'Pending',
         due: 'Tomorrow',
-        description: report.summary,
+        description: localized.summary,
         assignee: '',
         ...reportBase(report),
       });
@@ -241,9 +254,9 @@ function demoTasks(statuses: Record<string, TaskStatus>): SiteTask[] {
   ];
 }
 
-export async function buildTasks(reports: StructuredReport[]): Promise<SiteTask[]> {
+export async function buildTasks(reports: StructuredReport[], language = 'en'): Promise<SiteTask[]> {
   const [statuses, manualTasks] = await Promise.all([readStatuses(), readManualTasks()]);
-  const reportTasks = buildReportTasks(reports, statuses);
+  const reportTasks = buildReportTasks(reports, statuses, language);
   const generated = reportTasks.length ? reportTasks : demoTasks(statuses);
   const normalizedManual = manualTasks.map(task => ({
     ...task,

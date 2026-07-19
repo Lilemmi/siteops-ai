@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -31,16 +31,12 @@ import {
   X,
 } from 'lucide-react-native';
 import {launchImageLibrary} from 'react-native-image-picker';
+import Voice, {SpeechErrorEvent, SpeechResultsEvent} from '@react-native-voice/voice';
 import {ReportResult} from '../components/ReportResult';
-import {transcribeAudio} from '../services/audioTranscriptionService';
-import {
-  cleanupVoiceRecorder,
-  setupVoiceRecorder,
-  startVoiceRecording,
-  stopVoiceRecording,
-} from '../services/voiceRecorderService';
+import {FadeInView, FocusFadeView} from '../components/AnimatedUI';
 import {analyzeReport} from '../services/reportService';
 import {getReports, saveReport} from '../services/reportStorage';
+import {getLocalizedReport} from '../services/contentLocalization';
 import {buildReportReview} from '../services/reportReview';
 import {enqueueReportSync} from '../services/syncService';
 import {can, AppUser} from '../services/authService';
@@ -71,6 +67,21 @@ function formatRecordTime(milliseconds: number) {
   return `${minutes}:${seconds}`;
 }
 
+function recognitionLocale(inputLanguage: InputLanguage, appLanguage: string) {
+  const normalized = inputLanguage === 'auto' ? appLanguage : inputLanguage;
+  if (normalized.startsWith('he')) {
+    return 'he-IL';
+  }
+  if (normalized.startsWith('en')) {
+    return 'en-US';
+  }
+  return 'ru-RU';
+}
+
+function bestSpeechText(event: SpeechResultsEvent) {
+  return event.value?.find(value => value.trim().length > 0)?.trim() ?? '';
+}
+
 export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
   const {t, i18n} = useTranslation();
   const navigation = useNavigation<any>();
@@ -89,14 +100,47 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
   const [selectedSiteId, setSelectedSiteId] = useState('');
   const [photos, setPhotos] = useState<ReportPhoto[]>([]);
   const [voiceAvailable, setVoiceAvailable] = useState(true);
+  const voiceTextRef = useRef('');
+  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stoppingVoiceRef = useRef(false);
 
   useEffect(() => {
-    setVoiceAvailable(setupVoiceRecorder(setRecordMs));
+    Voice.onSpeechStart = () => {
+      setVoiceAvailable(true);
+    };
+    Voice.onSpeechPartialResults = (event: SpeechResultsEvent) => {
+      const nextText = bestSpeechText(event);
+      if (nextText) {
+        voiceTextRef.current = nextText;
+        setText(nextText);
+      }
+    };
+    Voice.onSpeechResults = (event: SpeechResultsEvent) => {
+      const nextText = bestSpeechText(event);
+      if (nextText) {
+        voiceTextRef.current = nextText;
+        setText(nextText);
+      }
+    };
+    Voice.onSpeechError = (_event: SpeechErrorEvent) => {
+      stopRecordTimer();
+      setListening(false);
+      setLoading(false);
+      if (!stoppingVoiceRef.current && !voiceTextRef.current.trim()) {
+        Alert.alert(t('report.voiceFailedTitle'), t('report.voiceFailedMessage'));
+      }
+      stoppingVoiceRef.current = false;
+    };
+    Voice.onSpeechEnd = () => {
+      stopRecordTimer();
+      setListening(false);
+    };
 
     return () => {
-      cleanupVoiceRecorder();
+      stopRecordTimer();
+      Voice.destroy().then(() => Voice.removeAllListeners()).catch(() => undefined);
     };
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     getFinanceState().then(state => {
@@ -116,12 +160,12 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
       return savedReports;
     }
     return savedReports.filter(item => (
-      item.summary.toLowerCase().includes(query) ||
+      getLocalizedReport(item, i18n.language).summary.toLowerCase().includes(query) ||
       item.originalText.toLowerCase().includes(query) ||
-      item.site.toLowerCase().includes(query) ||
-      item.missingMaterials.some(material => material.name.toLowerCase().includes(query))
+      getLocalizedReport(item, i18n.language).site.toLowerCase().includes(query) ||
+      getLocalizedReport(item, i18n.language).missingMaterials.some(material => material.name.toLowerCase().includes(query))
     ));
-  }, [savedReports, searchQuery]);
+  }, [i18n.language, savedReports, searchQuery]);
 
   async function analyzeText(value = text) {
     const cleanText = value.trim();
@@ -159,6 +203,21 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
     return result === PermissionsAndroid.RESULTS.GRANTED;
   }
 
+  function startRecordTimer() {
+    stopRecordTimer();
+    const startedAt = Date.now();
+    recordTimerRef.current = setInterval(() => {
+      setRecordMs(Date.now() - startedAt);
+    }, 200);
+  }
+
+  function stopRecordTimer() {
+    if (recordTimerRef.current) {
+      clearInterval(recordTimerRef.current);
+      recordTimerRef.current = null;
+    }
+  }
+
   async function handleVoicePress() {
     if (mode === 'Text') {
       await handleAnalyze();
@@ -166,18 +225,24 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
     }
 
     if (listening) {
+      stoppingVoiceRef.current = true;
+      stopRecordTimer();
+      setListening(false);
       try {
-        const audioUri = await stopVoiceRecording();
-        setListening(false);
-        setLoading(true);
-        const transcription = await transcribeAudio(audioUri, language);
-        setText(transcription.text);
-        setLoading(false);
-        await analyzeText(transcription.text);
+        await Voice.stop();
+        await new Promise(resolve => setTimeout(resolve, 500));
+        const recognizedText = voiceTextRef.current.trim() || text.trim();
+        if (recognizedText.length < 3) {
+          Alert.alert(t('report.voiceFailedTitle'), t('report.voiceFailedMessage'));
+          return;
+        }
+        setText(recognizedText);
+        await analyzeText(recognizedText);
       } catch {
-        setLoading(false);
-        setListening(false);
         Alert.alert(t('report.voiceFailedTitle'), t('report.voiceFailedMessage'));
+      } finally {
+        setLoading(false);
+        stoppingVoiceRef.current = false;
       }
       return;
     }
@@ -189,17 +254,23 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
     }
 
     setReport(null);
+    setPendingReport(null);
     setText('');
+    voiceTextRef.current = '';
     setRecordMs(0);
     setListening(true);
+    startRecordTimer();
     try {
-      if (!voiceAvailable) {
-        throw new Error('Voice recorder unavailable.');
-      }
-      await startVoiceRecording();
+      await Voice.start(recognitionLocale(language, i18n.language), {
+        EXTRA_LANGUAGE_MODEL: 'LANGUAGE_MODEL_FREE_FORM',
+        EXTRA_PARTIAL_RESULTS: true,
+      });
+      setVoiceAvailable(true);
     } catch {
+      stopRecordTimer();
       setListening(false);
-      Alert.alert(t('report.voiceFailedTitle'), t('report.voiceFailedMessage'));
+      setVoiceAvailable(false);
+      Alert.alert(t('report.voiceUnavailableTitle'), t('report.voiceUnavailableMessage'));
     }
   }
 
@@ -291,6 +362,7 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
       <KeyboardAvoidingView
         style={styles.safe}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <FocusFadeView style={styles.focusRoot}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <View style={styles.topBar}>
             <Pressable style={styles.clearIcon} onPress={resetScreen}>
@@ -343,48 +415,68 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
             </ScrollView>
           ) : null}
 
-          <View style={styles.inputCard}>
-            <TextInput
-              value={text}
-              onChangeText={setText}
-              multiline
-              textAlignVertical="top"
-              placeholder={t('report.placeholder')}
-              placeholderTextColor={colors.faint}
-              style={[styles.input, language === 'he' && styles.inputRtl]}
-            />
-            <Text style={styles.counter}>{text.length}/20000</Text>
-          </View>
-
-          <View style={styles.voiceBlock}>
-            <Text style={styles.listening}>
-              {loading && mode === 'Voice'
-                ? t('report.transcribing')
-                : mode === 'Voice'
-                  ? (listening ? `${t('report.listening')} ${formatRecordTime(recordMs)}` : t('report.voiceReady'))
-                  : t('report.ready')}
-            </Text>
-            <View style={styles.wave}>
-              {Array.from({length: 28}).map((_, index) => (
-                <View
-                  key={index}
-                  style={[
-                    styles.waveBar,
-                    waveHeights[index % waveHeights.length],
-                    mode !== 'Voice' && styles.waveIdle,
-                  ]}
+          {mode === 'Text' ? (
+            <View style={styles.textMode}>
+              <View style={styles.inputCard}>
+                <TextInput
+                  value={text}
+                  onChangeText={setText}
+                  multiline
+                  textAlignVertical="top"
+                  placeholder={t('report.placeholder')}
+                  placeholderTextColor={colors.faint}
+                  style={[styles.input, language === 'he' && styles.inputRtl]}
                 />
-              ))}
+                <Text style={styles.counter}>{text.length}/20000</Text>
+              </View>
+              <Pressable onPress={handleAnalyze} disabled={loading || !can(currentUser, 'report.create')}>
+                <LinearGradient colors={[colors.primary, colors.primary2]} style={styles.analyzeButton}>
+                  {loading ? <ActivityIndicator color={colors.text} /> : <Sparkles size={20} color={colors.text} />}
+                  <Text style={styles.analyzeButtonText}>
+                    {!can(currentUser, 'report.create') ? t('auth.noPermission') : t('report.tapAnalyze')}
+                  </Text>
+                </LinearGradient>
+              </Pressable>
             </View>
-            <Pressable onPress={handleVoicePress} disabled={loading || !can(currentUser, 'report.create')}>
-              <LinearGradient colors={[colors.primary2, colors.primary]} style={styles.micButton}>
-                {loading ? <ActivityIndicator color={colors.text} /> : <Mic size={34} color={colors.text} />}
-              </LinearGradient>
-            </Pressable>
-            <Text style={styles.tapText}>
-              {!can(currentUser, 'report.create') ? t('auth.noPermission') : mode === 'Voice' ? (listening ? t('report.tapStop') : t('report.tapSpeak')) : t('report.tapAnalyze')}
-            </Text>
-          </View>
+          ) : (
+            <View style={styles.voiceMode}>
+              <View style={styles.voiceCard}>
+                <Text style={styles.voiceTitle}>{t('report.voice')}</Text>
+                <Text style={styles.voiceHint}>
+                  {voiceAvailable ? t('report.voiceReady') : t('report.voiceUnavailableMessage')}
+                </Text>
+              </View>
+              <View style={styles.voiceBlock}>
+                <Text style={styles.listening}>
+                  {loading
+                    ? t('report.transcribing')
+                    : listening
+                      ? `${t('report.listening')} ${formatRecordTime(recordMs)}`
+                      : t('report.voiceReady')}
+                </Text>
+                <FadeInView style={styles.wave} delay={120}>
+                  {Array.from({length: 28}).map((_, index) => (
+                    <View
+                      key={index}
+                      style={[
+                        styles.waveBar,
+                        waveHeights[index % waveHeights.length],
+                        !listening && styles.waveIdle,
+                      ]}
+                    />
+                  ))}
+                </FadeInView>
+                <Pressable onPress={handleVoicePress} disabled={loading || !can(currentUser, 'report.create')}>
+                  <LinearGradient colors={[colors.primary2, colors.primary]} style={styles.micButton}>
+                    {loading ? <ActivityIndicator color={colors.text} /> : <Mic size={34} color={colors.text} />}
+                  </LinearGradient>
+                </Pressable>
+                <Text style={styles.tapText}>
+                  {!can(currentUser, 'report.create') ? t('auth.noPermission') : listening ? t('report.tapStop') : t('report.tapSpeak')}
+                </Text>
+              </View>
+            </View>
+          )}
 
           <View style={styles.controls}>
             <Pressable onPress={cycleLanguage} style={styles.languageSelector}>
@@ -414,7 +506,7 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
 
           {report ? (
             <ReportResult report={report} onEdit={handleEdit} onCreateTasks={handleCreateTasks} />
-          ) : (
+          ) : mode === 'Text' ? (
             <View style={styles.featureRow}>
               <View style={styles.featureIcon}>
                 <Sparkles size={18} color={colors.primary} />
@@ -425,8 +517,20 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
               </View>
               <MessageCircle size={18} color={colors.faint} />
             </View>
+          ) : (
+            <View style={styles.featureRow}>
+              <View style={styles.featureIcon}>
+                <Mic size={18} color={colors.primary} />
+              </View>
+              <View style={styles.featureCopy}>
+                <Text style={styles.featureTitle}>{t('report.voice')}</Text>
+                <Text style={styles.featureText}>{t('report.voiceReady')}</Text>
+              </View>
+              <MessageCircle size={18} color={colors.faint} />
+            </View>
           )}
         </ScrollView>
+        </FocusFadeView>
 
         <Modal visible={searchVisible} transparent animationType="slide" onRequestClose={() => setSearchVisible(false)}>
           <View style={styles.modalShade}>
@@ -448,12 +552,15 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
                 />
               </View>
               <ScrollView showsVerticalScrollIndicator={false}>
-                {filteredReports.length ? filteredReports.map(item => (
-                  <Pressable key={item.id} onPress={() => openReport(item)} style={styles.savedReportRow}>
-                    <Text style={styles.savedReportTitle}>{item.site} • {item.reportDate}</Text>
-                    <Text numberOfLines={2} style={styles.savedReportSummary}>{item.summary}</Text>
-                  </Pressable>
-                )) : (
+                {filteredReports.length ? filteredReports.map(item => {
+                  const localized = getLocalizedReport(item, i18n.language);
+                  return (
+                    <Pressable key={item.id} onPress={() => openReport(item)} style={styles.savedReportRow}>
+                      <Text style={styles.savedReportTitle}>{localized.site} • {item.reportDate}</Text>
+                      <Text numberOfLines={2} style={styles.savedReportSummary}>{localized.summary}</Text>
+                    </Pressable>
+                  );
+                }) : (
                   <View style={styles.emptySearch}>
                     <Text style={styles.emptySearchTitle}>{t('report.noSavedReports')}</Text>
                     <Text style={styles.emptySearchText}>{t('report.noSavedReportsHint')}</Text>
@@ -514,6 +621,7 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
 
 const styles = StyleSheet.create({
   safe: {flex: 1, backgroundColor: colors.background},
+  focusRoot: {flex: 1},
   content: {padding: 20, paddingBottom: 112, gap: 18},
   topBar: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
   clearIcon: {alignItems: 'center', backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 14, borderWidth: 1, height: 42, justifyContent: 'center', width: 42},
@@ -552,6 +660,13 @@ const styles = StyleSheet.create({
   photoThumbWrap: {position: 'relative'},
   photoThumb: {backgroundColor: colors.surface, borderRadius: 14, height: 76, width: 76},
   removePhoto: {alignItems: 'center', backgroundColor: colors.danger, borderRadius: 10, height: 20, justifyContent: 'center', position: 'absolute', right: -5, top: -5, width: 20},
+  textMode: {gap: 14},
+  voiceMode: {gap: 18},
+  voiceCard: {backgroundColor: colors.surface, borderColor: colors.border, borderRadius: radii.lg, borderWidth: 1, padding: 16},
+  voiceTitle: {color: colors.text, fontSize: 18, fontWeight: '900'},
+  voiceHint: {color: colors.muted, fontSize: 13, lineHeight: 19, marginTop: 6},
+  analyzeButton: {alignItems: 'center', borderRadius: 18, flexDirection: 'row', gap: 9, justifyContent: 'center', minHeight: 56},
+  analyzeButtonText: {color: colors.text, fontSize: 15, fontWeight: '900'},
   langChip: {backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 8},
   langChipActive: {backgroundColor: colors.primarySoft, borderColor: colors.primary},
   langText: {color: colors.muted, fontSize: 12, fontWeight: '800'},

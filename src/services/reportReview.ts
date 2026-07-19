@@ -1,5 +1,6 @@
 import i18n from '../i18n';
 import {StructuredReport} from '../types/report';
+import {getLocalizedReport} from './contentLocalization';
 
 export type ReviewSeverity = 'ok' | 'warning';
 
@@ -19,6 +20,7 @@ function severity(hasValue: boolean): ReviewSeverity {
 }
 
 export function buildReportReview(report: StructuredReport): ReviewField[] {
+  const localized = getLocalizedReport(report, i18n.language);
   return [
     {
       key: 'workers',
@@ -29,7 +31,7 @@ export function buildReportReview(report: StructuredReport): ReviewField[] {
     {
       key: 'site',
       label: i18n.t('export.site'),
-      value: report.site || i18n.t('common.notSpecified'),
+      value: localized.site || i18n.t('common.notSpecified'),
       severity: severity(Boolean(report.site)),
     },
     {
@@ -41,14 +43,14 @@ export function buildReportReview(report: StructuredReport): ReviewField[] {
     {
       key: 'workHours',
       label: i18n.t('export.workHours'),
-      value: report.workHours || i18n.t('common.notSpecified'),
+      value: localized.workHours || i18n.t('common.notSpecified'),
       severity: severity(Boolean(report.workHours && !/not specified|не указан|לא צוין/i.test(report.workHours))),
     },
     {
       key: 'completedWork',
       label: i18n.t('report.tasksCompleted'),
-      value: report.completedWork.length
-        ? report.completedWork.map(item => item.description).join(', ')
+      value: localized.completedWork.length
+        ? localized.completedWork.map(item => item.description).join(', ')
         : i18n.t('common.notSpecified'),
       severity: severity(report.completedWork.length > 0),
     },

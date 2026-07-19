@@ -40,7 +40,8 @@ import {
   TaskStatus,
 } from '../services/taskService';
 import {colors, radii} from '../theme';
-import {localizedSiteName} from '../i18n';
+import appI18n, {localizedSiteName} from '../i18n';
+import {CountUpText, FocusFadeView} from '../components/AnimatedUI';
 
 const priorities: Array<'All' | TaskPriority> = ['All', 'HIGH', 'MEDIUM', 'LOW'];
 const statuses: Array<'All' | TaskStatus> = ['All', 'Open', 'In Progress', 'Pending', 'Done'];
@@ -130,6 +131,44 @@ function localizedDue(due: string, t: (key: string, options?: any) => string) {
   return due;
 }
 
+function localizedTaskText(task: SiteTask, field: 'title' | 'description' | 'assignee', t: (key: string) => string) {
+  const language = appI18n.language === 'ru' || appI18n.language === 'he' ? appI18n.language : 'en';
+  const translated = task.translations?.[language]?.[field];
+  if (translated) {
+    return translated;
+  }
+
+  if (task.source !== 'demo') {
+    return task[field];
+  }
+
+  const keyById: Record<string, {title: string; description: string; assignee: string}> = {
+    'demo-material-dowels': {
+      title: 'tasks.demoTasks.dowelsTitle',
+      description: 'tasks.demoTasks.dowelsDescription',
+      assignee: 'tasks.demoTasks.siteManager',
+    },
+    'demo-drywall-screws': {
+      title: 'tasks.demoTasks.screwsTitle',
+      description: 'tasks.demoTasks.screwsDescription',
+      assignee: 'tasks.demoTasks.procurement',
+    },
+    'demo-elevator-delay': {
+      title: 'tasks.demoTasks.elevatorTitle',
+      description: 'tasks.demoTasks.elevatorDescription',
+      assignee: 'tasks.demoTasks.logistics',
+    },
+    'demo-safety-plan': {
+      title: 'tasks.demoTasks.safetyTitle',
+      description: 'tasks.demoTasks.safetyDescription',
+      assignee: 'tasks.demoTasks.safetyOfficer',
+    },
+  };
+
+  const key = keyById[task.id]?.[field];
+  return key ? t(key) : task[field];
+}
+
 function TaskCard({
   task,
   onOpen,
@@ -141,6 +180,9 @@ function TaskCard({
 }) {
   const {t} = useTranslation();
   const tone = toneFor(task);
+  const title = localizedTaskText(task, 'title', t);
+  const description = localizedTaskText(task, 'description', t);
+  const assignee = localizedTaskText(task, 'assignee', t);
 
   return (
     <Pressable
@@ -158,10 +200,10 @@ function TaskCard({
         <Text style={styles.sourceLabel}>{t(`tasks.source.${task.source}`)}</Text>
       </View>
 
-      <Text style={styles.taskTitle}>{task.title}</Text>
-      {task.description ? (
+      <Text style={styles.taskTitle}>{title}</Text>
+      {description ? (
         <Text numberOfLines={2} style={styles.taskDescription}>
-          {task.description}
+          {description}
         </Text>
       ) : null}
 
@@ -174,10 +216,10 @@ function TaskCard({
       <View style={styles.taskMeta}>
         <Clock3 size={12} color={colors.muted} />
         <Text style={styles.metaText}>{localizedDue(task.due, t)}</Text>
-        {task.assignee ? (
+        {assignee ? (
           <>
             <UserRound size={12} color={colors.muted} />
-            <Text style={styles.metaText}>{task.assignee}</Text>
+            <Text style={styles.metaText}>{assignee}</Text>
           </>
         ) : null}
       </View>
@@ -194,7 +236,7 @@ function TaskCard({
 }
 
 export function TasksScreen() {
-  const {t} = useTranslation();
+  const {t, i18n} = useTranslation();
   const [tasks, setTasks] = useState<SiteTask[]>([]);
   const [priorityFilter, setPriorityFilter] = useState<'All' | TaskPriority>('All');
   const [statusFilter, setStatusFilter] = useState<'All' | TaskStatus>('All');
@@ -206,9 +248,9 @@ export function TasksScreen() {
 
   const load = useCallback(() => {
     getReports().then(async reports => {
-      setTasks(await buildTasks(reports));
+      setTasks(await buildTasks(reports, i18n.language));
     });
-  }, []);
+  }, [i18n.language]);
 
   useFocusEffect(load);
 
@@ -231,7 +273,7 @@ export function TasksScreen() {
 
   async function refresh() {
     const reports = await getReports();
-    setTasks(await buildTasks(reports));
+    setTasks(await buildTasks(reports, i18n.language));
   }
 
   async function handleStatusChange(task: SiteTask) {
@@ -308,10 +350,11 @@ export function TasksScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
+      <FocusFadeView style={styles.focusRoot}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
-          <View>
-            <Text style={styles.title}>{t('tasks.title')}</Text>
+          <View style={styles.headerCopy}>
+            <Text style={styles.title} numberOfLines={2}>{t('tasks.title')}</Text>
             <Text style={styles.subtitle}>{t('tasks.subtitle')}</Text>
           </View>
           <View style={styles.headerActions}>
@@ -326,19 +369,19 @@ export function TasksScreen() {
 
         <View style={styles.statsGrid}>
           <View style={styles.statCard}>
-            <Text style={styles.statValue}>{stats.open}</Text>
+            <CountUpText value={stats.open} style={styles.statValue} />
             <Text style={styles.statLabel}>{t('tasks.openTasks')}</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={styles.statValue}>{stats.inProgress}</Text>
+            <CountUpText value={stats.inProgress} style={styles.statValue} />
             <Text style={styles.statLabel}>{t('tasks.activeWork')}</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={styles.statValue}>{stats.high}</Text>
+            <CountUpText value={stats.high} style={styles.statValue} />
             <Text style={[styles.statLabel, {color: colors.danger}]}>{t('tasks.highRisk')}</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={styles.statValue}>{stats.done}</Text>
+            <CountUpText value={stats.done} style={styles.statValue} />
             <Text style={styles.statLabel}>{t('tasks.doneTasks')}</Text>
           </View>
         </View>
@@ -410,6 +453,7 @@ export function TasksScreen() {
           )}
         </View>
       </ScrollView>
+      </FocusFadeView>
 
       <TaskDetailModal
         task={selectedTask}
@@ -582,6 +626,9 @@ function TaskDetailModal({
     return null;
   }
   const tone = toneFor(task);
+  const title = localizedTaskText(task, 'title', t);
+  const description = localizedTaskText(task, 'description', t);
+  const assignee = localizedTaskText(task, 'assignee', t);
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
@@ -599,16 +646,16 @@ function TaskDetailModal({
               {t(`tasks.priority.${task.priority.toLowerCase()}`)} • {t(`tasks.status.${statusKey(task.status)}`)}
             </Text>
           </View>
-          <Text style={styles.detailTitle}>{task.title}</Text>
+          <Text style={styles.detailTitle}>{title}</Text>
           <Text style={styles.detailDescription}>
-            {task.description || t('tasks.noDescription')}
+            {description || t('tasks.noDescription')}
           </Text>
 
           <View style={styles.detailRows}>
             <DetailRow icon={<MapPin size={16} color={colors.primary} />} label={t('tasks.siteName')} value={localizedSiteName(task.site, t)} />
             <DetailRow icon={<MapPin size={16} color={colors.primary} />} label={t('tasks.location')} value={localizedLocation(task.location, t)} />
             <DetailRow icon={<CalendarClock size={16} color={colors.primary} />} label={t('tasks.dueDate')} value={localizedDue(task.due, t)} />
-            <DetailRow icon={<UserRound size={16} color={colors.primary} />} label={t('tasks.assignee')} value={task.assignee || t('common.notSpecified')} />
+            <DetailRow icon={<UserRound size={16} color={colors.primary} />} label={t('tasks.assignee')} value={assignee || t('common.notSpecified')} />
           </View>
 
           <View style={styles.detailActions}>
@@ -643,11 +690,13 @@ function DetailRow({icon, label, value}: {icon: React.ReactNode; label: string; 
 
 const styles = StyleSheet.create({
   safe: {flex: 1, backgroundColor: colors.background},
+  focusRoot: {flex: 1},
   content: {padding: 20, paddingBottom: 112, gap: 14},
   header: {alignItems: 'flex-start', flexDirection: 'row', justifyContent: 'space-between', marginTop: 6},
-  title: {color: colors.text, fontSize: 25, fontWeight: '900'},
-  subtitle: {color: colors.muted, fontSize: 13, fontWeight: '700', marginTop: 4},
-  headerActions: {flexDirection: 'row', gap: 10},
+  headerCopy: {flex: 1, paddingRight: 12},
+  title: {color: colors.text, fontSize: 24, fontWeight: '900', lineHeight: 29},
+  subtitle: {color: colors.muted, fontSize: 13, fontWeight: '700', lineHeight: 18, marginTop: 4},
+  headerActions: {flexDirection: 'row', flexShrink: 0, gap: 10},
   headerButton: {alignItems: 'center', backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 14, borderWidth: 1, height: 42, justifyContent: 'center', width: 42},
   statsGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 10},
   statCard: {backgroundColor: colors.surface, borderColor: colors.border, borderRadius: radii.lg, borderWidth: 1, flexBasis: '47%', flexGrow: 1, padding: 14},

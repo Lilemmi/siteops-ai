@@ -31,6 +31,7 @@ import {
   X,
 } from 'lucide-react-native';
 import {AppCard} from '../components/AppCard';
+import {CountUpString, FocusFadeView} from '../components/AnimatedUI';
 import {clearReports, deleteReport, getReports} from '../services/reportStorage';
 import {
   expenseTotals,
@@ -41,6 +42,7 @@ import {
 } from '../services/financeService';
 import {shareReportPdf} from '../services/reportExport';
 import {buildTasks, getTaskStats, SiteTask} from '../services/taskService';
+import {getLocalizedReport} from '../services/contentLocalization';
 import {API_BASE_URL} from '../config';
 import {colors, radii} from '../theme';
 import {StructuredReport} from '../types/report';
@@ -99,10 +101,10 @@ export function MoreScreen({currentUser, onLogout}: {currentUser?: AppUser; onLo
   const load = useCallback(async () => {
     const [nextReports, nextFinance, queue] = await Promise.all([getReports(), getFinanceState(), getSyncQueue()]);
     setReports(nextReports);
-    setTasks(await buildTasks(nextReports));
+    setTasks(await buildTasks(nextReports, i18n.language));
     setFinance(nextFinance);
     setQueuedSyncCount(queue.length);
-  }, []);
+  }, [i18n.language]);
 
   useFocusEffect(
     useCallback(() => {
@@ -129,19 +131,20 @@ export function MoreScreen({currentUser, onLogout}: {currentUser?: AppUser; onLo
 
   const notifications = useMemo<NotificationItem[]>(() => {
     const latest = reports[0];
+    const localizedLatest = latest ? getLocalizedReport(latest, i18n.language) : null;
     const dynamic: NotificationItem[] = latest
       ? [
           {
             id: `report-${latest.id}`,
             title: t('more.reportAnalyzed'),
-            detail: latest.summary,
+            detail: localizedLatest?.summary ?? latest.summary,
             time: t('more.now'),
             icon: CheckCircle2,
             tone: colors.success,
             type: 'System',
             read: false,
           },
-          ...latest.missingMaterials.slice(0, 4).map((item, index) => ({
+          ...(localizedLatest?.missingMaterials ?? latest.missingMaterials).slice(0, 4).map((item, index) => ({
             id: `material-${latest.id}-${index}`,
             title: t('more.materialDelay'),
             detail: `${item.name} ${item.quantity}`.trim(),
@@ -151,7 +154,7 @@ export function MoreScreen({currentUser, onLogout}: {currentUser?: AppUser; onLo
             type: 'Alerts' as const,
             read: false,
           })),
-          ...latest.delays.slice(0, 4).map((item, index) => ({
+          ...(localizedLatest?.delays ?? latest.delays).slice(0, 4).map((item, index) => ({
             id: `delay-${latest.id}-${index}`,
             title: t('more.delayReported'),
             detail: item.reason,
@@ -190,29 +193,33 @@ export function MoreScreen({currentUser, onLogout}: {currentUser?: AppUser; onLo
       return reports;
     }
     return reports.filter(report =>
-      [
-        report.site,
-        report.reportDate,
-        report.summary,
-        report.originalText,
-        report.financialImpact,
-        ...report.missingMaterials.map(item => `${item.name} ${item.quantity}`),
-        ...report.delays.map(item => item.reason),
-      ].join(' ').toLowerCase().includes(query),
+      {
+        const localized = getLocalizedReport(report, i18n.language);
+        return [
+          localized.site,
+          report.reportDate,
+          localized.summary,
+          report.originalText,
+          localized.financialImpact,
+          ...localized.missingMaterials.map(item => `${item.name} ${item.quantity}`),
+          ...localized.delays.map(item => item.reason),
+        ].join(' ').toLowerCase().includes(query);
+      }
     );
-  }, [reports, searchQuery]);
+  }, [i18n.language, reports, searchQuery]);
 
   const historyInsights = useMemo(() => {
     const materialCounts = new Map<string, number>();
     const delayCounts = new Map<string, number>();
     reports.slice(0, 14).forEach(report => {
-      report.missingMaterials.forEach(item => {
+      const localized = getLocalizedReport(report, i18n.language);
+      localized.missingMaterials.forEach(item => {
         const key = item.name.trim().toLowerCase();
         if (key) {
           materialCounts.set(key, (materialCounts.get(key) ?? 0) + 1);
         }
       });
-      report.delays.forEach(item => {
+      localized.delays.forEach(item => {
         const key = item.reason.trim().toLowerCase();
         if (key) {
           delayCounts.set(key, (delayCounts.get(key) ?? 0) + 1);
@@ -223,7 +230,7 @@ export function MoreScreen({currentUser, onLogout}: {currentUser?: AppUser; onLo
     const repeatedDelays = [...delayCounts.entries()].filter(([, count]) => count > 1).slice(0, 3);
     const openIssues = reports.reduce((sum, report) => sum + report.delays.length + report.missingMaterials.length, 0);
     return {repeatedMaterials, repeatedDelays, openIssues};
-  }, [reports]);
+  }, [i18n.language, reports]);
 
   async function checkApi() {
     setApiChecking(true);
@@ -313,6 +320,7 @@ export function MoreScreen({currentUser, onLogout}: {currentUser?: AppUser; onLo
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
+      <FocusFadeView style={styles.focusRoot}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <View>
@@ -331,34 +339,23 @@ export function MoreScreen({currentUser, onLogout}: {currentUser?: AppUser; onLo
           <SummaryTile label={t('more.api')} value={t(`more.apiStatus.${apiStatus}`)} tone={apiStatus === 'offline' ? colors.danger : apiStatus === 'online' ? colors.success : colors.faint} />
         </View>
 
-        {currentUser ? (
-          <AppCard title={t('more.account')} right={<UserCircle size={18} color={colors.primary} />}>
-            <View style={styles.accountRow}>
-              <View>
-                <Text style={styles.accountName}>{currentUser.name}</Text>
-                <Text style={styles.accountMeta}>{currentUser.email} • {t(roleLabelKey(currentUser.role))}</Text>
-              </View>
-              <Pressable onPress={onLogout} style={styles.logoutButton}>
-                <Text style={styles.logoutText}>{t('auth.logout')}</Text>
-              </Pressable>
-            </View>
-            <Text style={styles.actionDetail}>{currentUser.companyName}</Text>
-          </AppCard>
-        ) : null}
-
         <AppCard title={t('more.notifications')} right={<Text style={styles.badge}>{notifications.filter(item => !item.read).length}</Text>}>
-          <View style={styles.tabs}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.tabs}
+            contentContainerStyle={styles.tabsContent}>
             {(['All', 'Alerts', 'Finance', 'System'] as const).map(item => (
               <Pressable
                 key={item}
                 onPress={() => setTab(item)}
                 style={[styles.tab, tab === item && styles.tabActive]}>
-                <Text style={[styles.tabText, tab === item && styles.tabTextActive]}>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[styles.tabText, tab === item && styles.tabTextActive]}>
                   {t(`common.${item.toLowerCase()}`)}
                 </Text>
               </Pressable>
             ))}
-          </View>
+          </ScrollView>
           {visibleNotifications.map(item => {
             const Icon = item.icon;
             return (
@@ -400,21 +397,24 @@ export function MoreScreen({currentUser, onLogout}: {currentUser?: AppUser; onLo
             ) : null}
           </View>
           {filteredReports.length ? (
-            filteredReports.slice(0, 12).map(report => (
-              <Pressable key={report.id} onPress={() => setSelectedReport(report)} style={styles.reportRow}>
-                <View style={styles.reportMark}>
-                  <FileText size={17} color={colors.text} />
-                </View>
-                <View style={styles.reportCopy}>
-                  <Text style={styles.reportTitle}>
-                    {localizedSiteName(report.site === 'Не указан' ? 'Tower A' : report.site, t)} • {formatDate(report.reportDate, i18n.language)}
-                  </Text>
-                  <Text numberOfLines={2} style={styles.reportSummary}>{report.summary}</Text>
-                </View>
-                <Text style={styles.source}>{sourceTitle(report.source)}</Text>
-                <ChevronRight size={16} color={colors.faint} />
-              </Pressable>
-            ))
+            filteredReports.slice(0, 12).map(report => {
+              const localized = getLocalizedReport(report, i18n.language);
+              return (
+                <Pressable key={report.id} onPress={() => setSelectedReport(report)} style={styles.reportRow}>
+                  <View style={styles.reportMark}>
+                    <FileText size={17} color={colors.text} />
+                  </View>
+                  <View style={styles.reportCopy}>
+                    <Text style={styles.reportTitle}>
+                      {localizedSiteName(report.site === 'Не указан' ? 'Tower A' : report.site, t)} • {formatDate(report.reportDate, i18n.language)}
+                    </Text>
+                    <Text numberOfLines={2} style={styles.reportSummary}>{localized.summary}</Text>
+                  </View>
+                  <Text style={styles.source}>{sourceTitle(report.source)}</Text>
+                  <ChevronRight size={16} color={colors.faint} />
+                </Pressable>
+              );
+            })
           ) : (
             <Text style={styles.empty}>{reports.length ? t('more.noSearchResults') : t('more.emptyHistory')}</Text>
           )}
@@ -447,14 +447,14 @@ export function MoreScreen({currentUser, onLogout}: {currentUser?: AppUser; onLo
           {financeSummary ? (
             <>
               <View style={styles.financeRow}>
-                <View>
+                <View style={styles.financeCopy}>
                   <Text style={styles.budget}>{money(financeSummary.selectedSite.contractValue, i18n.language)}</Text>
                   <Text style={styles.muted}>{localizedSiteName(financeSummary.selectedSite.name, t)}</Text>
                 </View>
                 <LinearGradient colors={[colors.primary, colors.primary2]} style={styles.ring}>
                   <View style={styles.ringInner}>
                     <Text style={styles.ringValue}>{financeSummary.selectedSite.progress}%</Text>
-                    <Text style={styles.muted}>{t('common.used')}</Text>
+                    <Text numberOfLines={1} adjustsFontSizeToFit style={styles.ringLabel}>{t('more.financeUsed')}</Text>
                   </View>
                 </LinearGradient>
               </View>
@@ -474,31 +474,8 @@ export function MoreScreen({currentUser, onLogout}: {currentUser?: AppUser; onLo
           ) : null}
         </AppCard>
 
-        <AppCard title={t('more.system')} right={<Cloud size={18} color={colors.primary} />}>
-          <ActionRow
-            title={t('more.checkApi')}
-            detail={API_BASE_URL}
-            right={apiChecking ? <ActivityIndicator color={colors.primary} /> : <Text style={styles.actionStatus}>{t(`more.apiStatus.${apiStatus}`)}</Text>}
-            onPress={checkApi}
-          />
-          <ActionRow
-            title={t('more.syncReports')}
-            detail={t('more.syncQueue', {count: queuedSyncCount})}
-            right={syncing ? <ActivityIndicator color={colors.primary} /> : <Text style={styles.actionStatus}>{queuedSyncCount}</Text>}
-            onPress={syncNow}
-          />
-          <ActionRow
-            title={t('more.backupData')}
-            detail={t('more.backupHint')}
-            right={<Download size={18} color={colors.primary} />}
-            onPress={backupData}
-          />
-          <View style={styles.pushBox}>
-            <Text style={styles.actionTitle}>{t('more.pushReady')}</Text>
-            <Text style={styles.actionDetail}>{t('more.pushReadyHint')}</Text>
-          </View>
-        </AppCard>
       </ScrollView>
+      </FocusFadeView>
 
       <ReportModal
         report={selectedReport}
@@ -509,9 +486,18 @@ export function MoreScreen({currentUser, onLogout}: {currentUser?: AppUser; onLo
 
       <SettingsModal
         visible={settingsVisible}
+        currentUser={currentUser}
         currentLanguage={i18n.language as AppLanguage}
+        apiChecking={apiChecking}
+        apiStatus={apiStatus}
+        syncing={syncing}
+        queuedSyncCount={queuedSyncCount}
         onClose={() => setSettingsVisible(false)}
         onLanguageChange={changeAppLanguage}
+        onCheckApi={checkApi}
+        onSyncNow={syncNow}
+        onBackupData={backupData}
+        onLogout={onLogout}
       />
     </SafeAreaView>
   );
@@ -520,7 +506,7 @@ export function MoreScreen({currentUser, onLogout}: {currentUser?: AppUser; onLo
 function SummaryTile({label, value, tone}: {label: string; value: string; tone: string}) {
   return (
     <View style={styles.summaryTile}>
-      <Text style={[styles.summaryValue, {color: tone}]}>{value}</Text>
+      <CountUpString value={value} style={[styles.summaryValue, {color: tone}]} />
       <Text style={styles.summaryLabel}>{label}</Text>
     </View>
   );
@@ -563,6 +549,7 @@ function ReportModal({
   if (!report) {
     return null;
   }
+  const localized = getLocalizedReport(report, i18n.language);
 
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
@@ -579,13 +566,13 @@ function ReportModal({
               {localizedSiteName(report.site === 'Не указан' ? 'Tower A' : report.site, t)}
             </Text>
             <Text style={styles.detailMeta}>{formatDate(report.reportDate, i18n.language)} • {sourceTitle(report.source)}</Text>
-            <Text style={styles.detailSummary}>{report.summary}</Text>
+            <Text style={styles.detailSummary}>{localized.summary}</Text>
             <DetailBlock title={t('report.workers')} value={report.workersCount?.toString() ?? t('common.notSpecified')} />
             <DetailBlock title={t('report.location')} value={report.floors.join(', ') || t('common.notSpecified')} />
-            <DetailBlock title={t('report.materialsMissing')} value={report.missingMaterials.map(item => `${item.name} ${item.quantity}`.trim()).join('\n') || t('common.none')} />
-            <DetailBlock title={t('report.delays')} value={report.delays.map(item => `${item.reason}: ${item.impact}`).join('\n') || t('common.none')} />
-            <DetailBlock title={t('report.nextSteps')} value={report.nextDayTasks.join('\n') || t('common.none')} />
-            <DetailBlock title={t('report.managerMessage')} value={report.managerMessageHebrew || t('common.none')} />
+            <DetailBlock title={t('report.materialsMissing')} value={localized.missingMaterials.map(item => `${item.name} ${item.quantity}`.trim()).join('\n') || t('common.none')} />
+            <DetailBlock title={t('report.delays')} value={localized.delays.map(item => `${item.reason}: ${item.impact}`).join('\n') || t('common.none')} />
+            <DetailBlock title={t('report.nextSteps')} value={localized.nextDayTasks.join('\n') || t('common.none')} />
+            <DetailBlock title={t('report.managerMessage')} value={localized.managerMessage || t('common.none')} />
           </ScrollView>
           <View style={styles.sheetActions}>
             <Pressable style={styles.exportButton} onPress={() => onExport(report)}>
@@ -613,14 +600,32 @@ function DetailBlock({title, value}: {title: string; value: string}) {
 
 function SettingsModal({
   visible,
+  currentUser,
   currentLanguage,
+  apiChecking,
+  apiStatus,
+  syncing,
+  queuedSyncCount,
   onClose,
   onLanguageChange,
+  onCheckApi,
+  onSyncNow,
+  onBackupData,
+  onLogout,
 }: {
   visible: boolean;
+  currentUser?: AppUser;
   currentLanguage: AppLanguage;
+  apiChecking: boolean;
+  apiStatus: 'unknown' | 'online' | 'offline';
+  syncing: boolean;
+  queuedSyncCount: number;
   onClose: () => void;
   onLanguageChange: (language: AppLanguage) => void;
+  onCheckApi: () => void;
+  onSyncNow: () => void;
+  onBackupData: () => void;
+  onLogout?: () => void;
 }) {
   const {t} = useTranslation();
 
@@ -634,26 +639,74 @@ function SettingsModal({
               <X size={18} color={colors.text} />
             </Pressable>
           </View>
-          <View style={styles.languagePanel}>
-            <Globe2 size={18} color={colors.primary} />
-            <View style={styles.languageCopy}>
-              <Text style={styles.actionTitle}>{t('language.title')}</Text>
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.settingsContent}>
+            {currentUser ? (
+              <View style={styles.settingsSection}>
+                <View style={styles.settingsSectionHeader}>
+                  <UserCircle size={18} color={colors.primary} />
+                  <Text style={styles.settingsSectionTitle}>{t('more.account')}</Text>
+                </View>
+                <View style={styles.accountBox}>
+                  <View style={styles.accountRow}>
+                    <View style={styles.accountCopy}>
+                      <Text style={styles.accountName}>{currentUser.name}</Text>
+                      <Text style={styles.accountMeta}>{currentUser.email} • {t(roleLabelKey(currentUser.role))}</Text>
+                      <Text style={styles.actionDetail}>{currentUser.companyName}</Text>
+                    </View>
+                    <Pressable onPress={onLogout} style={styles.logoutButton}>
+                      <Text style={styles.logoutText}>{t('auth.logout')}</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            ) : null}
+
+            <View style={styles.settingsSection}>
+              <View style={styles.settingsSectionHeader}>
+                <Globe2 size={18} color={colors.primary} />
+                <Text style={styles.settingsSectionTitle}>{t('language.title')}</Text>
+              </View>
               <Text style={styles.actionDetail}>{t('language.subtitle')}</Text>
+              <View style={styles.languageButtons}>
+                {(['en', 'ru', 'he'] as AppLanguage[]).map(language => (
+                  <Pressable
+                    key={language}
+                    onPress={() => onLanguageChange(language)}
+                    style={[styles.languageButton, currentLanguage === language && styles.languageButtonActive]}>
+                    <Text style={[styles.languageButtonText, currentLanguage === language && styles.languageButtonTextActive]}>
+                      {t(language === 'en' ? 'common.english' : language === 'ru' ? 'common.russian' : 'common.hebrew')}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={styles.restartHint}>{t('language.restart')}</Text>
             </View>
-          </View>
-          <View style={styles.languageButtons}>
-            {(['en', 'ru', 'he'] as AppLanguage[]).map(language => (
-              <Pressable
-                key={language}
-                onPress={() => onLanguageChange(language)}
-                style={[styles.languageButton, currentLanguage === language && styles.languageButtonActive]}>
-                <Text style={[styles.languageButtonText, currentLanguage === language && styles.languageButtonTextActive]}>
-                  {t(language === 'en' ? 'common.english' : language === 'ru' ? 'common.russian' : 'common.hebrew')}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-          <Text style={styles.restartHint}>{t('language.restart')}</Text>
+
+            <View style={styles.settingsSection}>
+              <View style={styles.settingsSectionHeader}>
+                <Cloud size={18} color={colors.primary} />
+                <Text style={styles.settingsSectionTitle}>{t('more.system')}</Text>
+              </View>
+              <ActionRow
+                title={t('more.checkApi')}
+                detail={t('more.apiConnectionHint')}
+                right={apiChecking ? <ActivityIndicator color={colors.primary} /> : <Text style={styles.actionStatus}>{t(`more.apiStatus.${apiStatus}`)}</Text>}
+                onPress={onCheckApi}
+              />
+              <ActionRow
+                title={t('more.syncReports')}
+                detail={t('more.syncQueue', {count: queuedSyncCount})}
+                right={syncing ? <ActivityIndicator color={colors.primary} /> : <Text style={styles.actionStatus}>{queuedSyncCount}</Text>}
+                onPress={onSyncNow}
+              />
+              <ActionRow
+                title={t('more.backupData')}
+                detail={t('more.backupHint')}
+                right={<Download size={18} color={colors.primary} />}
+                onPress={onBackupData}
+              />
+            </View>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -662,6 +715,7 @@ function SettingsModal({
 
 const styles = StyleSheet.create({
   safe: {flex: 1, backgroundColor: colors.background},
+  focusRoot: {flex: 1},
   content: {padding: 20, paddingBottom: 112, gap: 15},
   header: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 6},
   title: {color: colors.text, fontSize: 25, fontWeight: '900'},
@@ -672,10 +726,11 @@ const styles = StyleSheet.create({
   summaryValue: {fontSize: 23, fontWeight: '900'},
   summaryLabel: {color: colors.muted, fontSize: 12, fontWeight: '800', marginTop: 4},
   badge: {backgroundColor: colors.primarySoft, borderRadius: 9, color: colors.primary, fontSize: 12, fontWeight: '900', overflow: 'hidden', paddingHorizontal: 9, paddingVertical: 4},
-  tabs: {backgroundColor: colors.surface3, borderRadius: 14, flexDirection: 'row', marginBottom: 8, padding: 4},
-  tab: {alignItems: 'center', borderRadius: 11, flex: 1, paddingVertical: 9},
+  tabs: {backgroundColor: colors.surface3, borderRadius: 14, marginBottom: 8},
+  tabsContent: {gap: 6, padding: 4},
+  tab: {alignItems: 'center', borderRadius: 11, minWidth: 92, paddingHorizontal: 14, paddingVertical: 9},
   tabActive: {backgroundColor: colors.primarySoft},
-  tabText: {color: colors.muted, fontSize: 11, fontWeight: '800'},
+  tabText: {color: colors.muted, fontSize: 11, fontWeight: '800', textAlign: 'center'},
   tabTextActive: {color: colors.text},
   notification: {alignItems: 'flex-start', flexDirection: 'row', gap: 11, paddingVertical: 10},
   notificationIcon: {alignItems: 'center', borderRadius: 11, height: 40, justifyContent: 'center', width: 40},
@@ -694,19 +749,22 @@ const styles = StyleSheet.create({
   reportSummary: {color: colors.muted, fontSize: 11, lineHeight: 16, marginTop: 2},
   source: {backgroundColor: colors.primarySoft, borderRadius: 7, color: colors.primary, fontSize: 9, fontWeight: '900', overflow: 'hidden', paddingHorizontal: 7, paddingVertical: 5},
   empty: {color: colors.muted, fontSize: 13, lineHeight: 19},
-  financeRow: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12},
-  budget: {color: colors.text, fontSize: 24, fontWeight: '900'},
+  financeRow: {alignItems: 'center', flexDirection: 'row', gap: 14, justifyContent: 'space-between', marginBottom: 14},
+  financeCopy: {flex: 1, minWidth: 0, paddingRight: 4},
+  budget: {color: colors.text, fontSize: 22, fontWeight: '900', lineHeight: 28},
   muted: {color: colors.muted, fontSize: 11, marginTop: 2},
-  ring: {alignItems: 'center', borderRadius: 47, height: 94, justifyContent: 'center', width: 94},
-  ringInner: {alignItems: 'center', backgroundColor: colors.surface, borderRadius: 35, height: 70, justifyContent: 'center', width: 70},
-  ringValue: {color: colors.text, fontSize: 17, fontWeight: '900'},
-  legendRow: {alignItems: 'center', flexDirection: 'row', gap: 8, paddingVertical: 5},
+  ring: {alignItems: 'center', borderRadius: 43, flexShrink: 0, height: 86, justifyContent: 'center', width: 86},
+  ringInner: {alignItems: 'center', backgroundColor: colors.surface, borderRadius: 31, height: 62, justifyContent: 'center', paddingHorizontal: 5, width: 62},
+  ringValue: {color: colors.text, fontSize: 16, fontWeight: '900', lineHeight: 20},
+  ringLabel: {color: colors.muted, fontSize: 9, fontWeight: '800', lineHeight: 12, marginTop: 1, maxWidth: 54, textAlign: 'center'},
+  legendRow: {alignItems: 'center', flexDirection: 'row', gap: 8, paddingVertical: 6},
   dot: {borderRadius: 4, height: 8, width: 8},
   legendLabel: {color: colors.muted, flex: 1, fontSize: 12},
   legendValue: {color: colors.text, fontSize: 12, fontWeight: '900'},
   insightRow: {alignItems: 'center', flexDirection: 'row', gap: 9, paddingVertical: 7},
   insightText: {color: colors.text, flex: 1, fontSize: 13, fontWeight: '800', lineHeight: 19},
   accountRow: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', gap: 12},
+  accountCopy: {flex: 1},
   accountName: {color: colors.text, fontSize: 16, fontWeight: '900'},
   accountMeta: {color: colors.muted, fontSize: 12, marginTop: 4},
   logoutButton: {backgroundColor: colors.surface3, borderColor: colors.border, borderRadius: 12, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 9},
@@ -716,7 +774,6 @@ const styles = StyleSheet.create({
   actionTitle: {color: colors.text, fontSize: 13, fontWeight: '900'},
   actionDetail: {color: colors.muted, fontSize: 11, lineHeight: 16, marginTop: 2},
   actionStatus: {color: colors.primary, fontSize: 12, fontWeight: '900'},
-  pushBox: {backgroundColor: colors.surface3, borderColor: colors.border, borderRadius: 13, borderWidth: 1, marginTop: 8, padding: 12},
   modalShade: {backgroundColor: 'rgba(0,0,0,0.68)', flex: 1, justifyContent: 'flex-end'},
   sheet: {backgroundColor: colors.background, borderColor: colors.border, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, maxHeight: '88%', padding: 18},
   sheetHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
@@ -734,7 +791,12 @@ const styles = StyleSheet.create({
   exportButtonText: {color: colors.text, fontSize: 13, fontWeight: '900'},
   deleteButton: {alignItems: 'center', backgroundColor: colors.dangerSoft, borderColor: `${colors.danger}55`, borderRadius: 15, borderWidth: 1, justifyContent: 'center', width: 52},
   settingsShade: {alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.68)', flex: 1, justifyContent: 'center', padding: 20},
-  settingsCard: {backgroundColor: colors.background, borderColor: colors.border, borderRadius: radii.xl, borderWidth: 1, gap: 14, padding: 18, width: '100%'},
+  settingsCard: {backgroundColor: colors.background, borderColor: colors.border, borderRadius: radii.xl, borderWidth: 1, gap: 14, maxHeight: '86%', padding: 18, width: '100%'},
+  settingsContent: {gap: 14, paddingBottom: 4},
+  settingsSection: {backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 16, borderWidth: 1, gap: 10, padding: 14},
+  settingsSectionHeader: {alignItems: 'center', flexDirection: 'row', gap: 9},
+  settingsSectionTitle: {color: colors.text, fontSize: 15, fontWeight: '900'},
+  accountBox: {backgroundColor: colors.surface3, borderColor: colors.border, borderRadius: 14, borderWidth: 1, padding: 12},
   languagePanel: {alignItems: 'center', backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 11, padding: 13},
   languageCopy: {flex: 1},
   languageButtons: {flexDirection: 'row', gap: 8},

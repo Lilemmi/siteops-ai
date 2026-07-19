@@ -34,11 +34,13 @@ import {
   Plus,
   Send,
   ShieldCheck,
+  AlertTriangle,
   Users,
   X,
   LucideIcon,
 } from 'lucide-react-native';
 import {AppCard} from '../components/AppCard';
+import {CountUpText, FocusFadeView} from '../components/AnimatedUI';
 import {MetricCard} from '../components/MetricCard';
 import {ProgressLine} from '../components/ProgressLine';
 import {
@@ -50,6 +52,7 @@ import {
 import {FinanceSite, getFinanceState} from '../services/financeService';
 import {getReports} from '../services/reportStorage';
 import {buildTasks, SiteTask} from '../services/taskService';
+import {getLocalizedReport} from '../services/contentLocalization';
 import {colors, radii} from '../theme';
 import {StructuredReport} from '../types/report';
 import {localizedSiteName} from '../i18n';
@@ -89,6 +92,8 @@ const quickActions: {labelKey: string; icon: LucideIcon; action: 'report' | 'pho
 const defaultDashboard: DashboardState = {
   selectedSite: 'All Sites',
   notificationsRead: false,
+  checklistSubmittedAt: null,
+  checklistLastNotifiedAt: null,
   photos: [],
   checklist: [],
   chat: [],
@@ -129,8 +134,8 @@ export function DashboardScreen({navigation}: {navigation: any}) {
     setReports(nextReports);
     setFinanceSites(financeState.sites);
     setDashboard(nextDashboard);
-    setTasks(await buildTasks(nextReports));
-  }, []);
+    setTasks(await buildTasks(nextReports, i18n.language));
+  }, [i18n.language]);
 
   useFocusEffect(
     useCallback(() => {
@@ -182,9 +187,28 @@ export function DashboardScreen({navigation}: {navigation: any}) {
     return {workers, missing, open, progress};
   }, [selectedSite, selectedSiteProgress, visibleReports, visibleTasks]);
 
+  const checklistStats = useMemo(() => {
+    const total = dashboard.checklist.length;
+    const done = dashboard.checklist.filter(item => item.done).length;
+    const complete = total > 0 && done === total;
+    return {total, done, missing: Math.max(total - done, 0), complete};
+  }, [dashboard.checklist]);
+
   const notifications = useMemo(() => {
     const latest = visibleReports[0];
     return [
+      {
+        title: checklistStats.complete ? t('dashboard.checklistNotificationCompleteTitle') : t('dashboard.checklistNotificationDueTitle'),
+        detail: checklistStats.complete
+          ? t('dashboard.checklistNotificationCompleteDetail', {
+              time: dashboard.checklistSubmittedAt
+                ? new Intl.DateTimeFormat(i18n.language, {hour: '2-digit', minute: '2-digit'}).format(new Date(dashboard.checklistSubmittedAt))
+                : t('common.today'),
+            })
+          : t('dashboard.checklistNotificationDueDetail', {count: checklistStats.missing}),
+        tone: checklistStats.complete ? colors.success : colors.warning,
+        icon: checklistStats.complete ? CheckCircle2 : AlertTriangle,
+      },
       ...(latest?.missingMaterials ?? []).map(item => ({
         title: t('dashboard.materialRequired'),
         detail: `${item.name} ${item.quantity}`.trim(),
@@ -204,7 +228,7 @@ export function DashboardScreen({navigation}: {navigation: any}) {
         icon: CheckCircle2,
       },
     ];
-  }, [t, visibleReports]);
+  }, [checklistStats.complete, checklistStats.missing, dashboard.checklistSubmittedAt, i18n.language, t, visibleReports]);
 
   const selectSite = async (site: string) => {
     await updateDashboard({...dashboard, selectedSite: site}, t('dashboard.siteSelected', {site: localizedSiteName(site, t)}));
@@ -245,12 +269,19 @@ export function DashboardScreen({navigation}: {navigation: any}) {
   };
 
   const toggleChecklist = async (id: string) => {
+    const wasComplete = dashboard.checklist.length > 0 && dashboard.checklist.every(item => item.done);
+    const nextChecklist = dashboard.checklist.map(item =>
+        item.id === id ? {...item, done: !item.done} : item,
+      );
+    const isComplete = nextChecklist.length > 0 && nextChecklist.every(item => item.done);
+    const now = new Date().toISOString();
     await updateDashboard({
       ...dashboard,
-      checklist: dashboard.checklist.map(item =>
-        item.id === id ? {...item, done: !item.done} : item,
-      ),
-    });
+      checklist: nextChecklist,
+      checklistSubmittedAt: isComplete ? dashboard.checklistSubmittedAt ?? now : null,
+      checklistLastNotifiedAt: isComplete && !wasComplete ? now : dashboard.checklistLastNotifiedAt,
+      notificationsRead: isComplete && !wasComplete ? false : dashboard.notificationsRead,
+    }, isComplete && !wasComplete ? t('dashboard.checklistCompletedToast') : !isComplete && wasComplete ? t('dashboard.checklistIncompleteToast') : undefined);
   };
 
   const sendMessage = async () => {
@@ -284,9 +315,11 @@ export function DashboardScreen({navigation}: {navigation: any}) {
   };
 
   const recent = visibleReports[0];
+  const recentLocalized = recent ? getLocalizedReport(recent, i18n.language) : null;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
+      <FocusFadeView style={styles.focusRoot}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <View style={styles.headerCopy}>
@@ -332,12 +365,55 @@ export function DashboardScreen({navigation}: {navigation: any}) {
           </Pressable>
         </AppCard>
 
+        <AppCard
+          title={t('dashboard.checklistStatusTitle')}
+          right={
+            <View style={[styles.checklistBadge, checklistStats.complete ? styles.checklistBadgeDone : styles.checklistBadgeOpen]}>
+              <Text style={[styles.checklistBadgeText, {color: checklistStats.complete ? colors.success : colors.warning}]}>
+                {checklistStats.complete ? t('dashboard.checklistCompleteBadge') : t('dashboard.checklistIncompleteBadge')}
+              </Text>
+            </View>
+          }>
+          <Pressable accessibilityRole="button" onPress={() => setPanel('checklist')} style={styles.checklistSummary}>
+            <View style={[styles.checklistRing, {borderColor: checklistStats.complete ? colors.success : colors.warning}]}>
+              <CountUpText value={checklistStats.done} style={styles.checklistDone} />
+              <Text style={styles.checklistTotal}>/{checklistStats.total}</Text>
+            </View>
+            <View style={styles.checklistCopy}>
+              <Text style={styles.checklistTitleText}>
+                {checklistStats.complete ? t('dashboard.checklistComplete') : t('dashboard.checklistIncomplete')}
+              </Text>
+              <Text style={styles.checklistMeta}>
+                {checklistStats.complete
+                  ? t('dashboard.checklistSubmittedAt', {
+                      time: dashboard.checklistSubmittedAt
+                        ? new Intl.DateTimeFormat(i18n.language, {hour: '2-digit', minute: '2-digit'}).format(new Date(dashboard.checklistSubmittedAt))
+                        : t('common.today'),
+                    })
+                  : t('dashboard.checklistMissingCount', {count: checklistStats.missing})}
+              </Text>
+            </View>
+            <ChevronRight size={18} color={colors.faint} />
+          </Pressable>
+          <View style={styles.checklistProgressTrack}>
+            <View
+              style={[
+                styles.checklistProgressFill,
+                {
+                  width: `${checklistStats.total ? (checklistStats.done / checklistStats.total) * 100 : 0}%`,
+                  backgroundColor: checklistStats.complete ? colors.success : colors.warning,
+                },
+              ]}
+            />
+          </View>
+        </AppCard>
+
         <AppCard title={t('dashboard.recentActivity')} right={<Pressable onPress={() => setPanel('activity')}><Text style={styles.link}>{t('common.viewAll')}</Text></Pressable>}>
           <Pressable onPress={() => recent ? openReport(recent) : navigation.navigate('Report')} style={styles.activityRow}>
             <View style={styles.activityIcon}><ClipboardList size={18} color={colors.warning} /></View>
             <View style={styles.activityText}>
               <Text style={styles.activityTitle}>{recent ? `${localizedSiteName(reportSite(recent), t)} • ${t('dashboard.dailyReport')}` : t('dashboard.noDailyReport')}</Text>
-              <Text style={styles.activityMeta}>{recent?.summary ?? t('dashboard.createFirstHint')}</Text>
+              <Text style={styles.activityMeta}>{recentLocalized?.summary ?? t('dashboard.createFirstHint')}</Text>
             </View>
             {recent ? <View style={styles.statusPill}><Text style={styles.statusPillText}>{recent.source === 'gpt' ? t('common.analyzed') : t('common.demo')}</Text></View> : <ChevronRight size={18} color={colors.faint} />}
           </Pressable>
@@ -359,6 +435,7 @@ export function DashboardScreen({navigation}: {navigation: any}) {
           </LinearGradient>
         </Pressable>
       </ScrollView>
+      </FocusFadeView>
 
       {toast ? <View style={styles.toast}><Check size={16} color={colors.success} /><Text style={styles.toastText}>{toast}</Text></View> : null}
 
@@ -394,7 +471,7 @@ export function DashboardScreen({navigation}: {navigation: any}) {
 
             {panel === 'workers' ? (
               <><PanelHeader title={t('dashboard.workersTitle')} onClose={() => setPanel(null)} />
-                <View style={styles.workerHero}><Users size={28} color={colors.success} /><Text style={styles.workerCount}>{stats.workers}</Text><Text style={styles.workerLabel}>{t('dashboard.peopleReported')}</Text></View>
+                <View style={styles.workerHero}><Users size={28} color={colors.success} /><CountUpText value={stats.workers} style={styles.workerCount} /><Text style={styles.workerLabel}>{t('dashboard.peopleReported')}</Text></View>
                 {(visibleReports.length ? visibleReports.slice(0, 5) : [null]).map(report => (
                   <View key={report?.id ?? 'empty'} style={styles.detailRow}><View><Text style={styles.detailTitle}>{localizedSiteName(report ? reportSite(report) : selectedSite, t)}</Text><Text style={styles.detailMeta}>{report ? `${report.reportDate} • ${report.workHours || t('dashboard.hoursMissing')}` : t('dashboard.noWorkforce')}</Text></View><Text style={styles.detailValue}>{report?.workersCount ?? 0}</Text></View>
                 ))}
@@ -404,7 +481,7 @@ export function DashboardScreen({navigation}: {navigation: any}) {
 
             {panel === 'progress' ? (
               <><PanelHeader title={t('dashboard.progressTitle', {site: localizedSiteName(selectedSite, t)})} onClose={() => setPanel(null)} />
-                <View style={styles.progressHero}><Text style={styles.progressValue}>{stats.progress}%</Text><Text style={styles.progressCaption}>{t('dashboard.completion')}</Text></View>
+                <View style={styles.progressHero}><CountUpText value={stats.progress} formatter={value => `${value}%`} style={styles.progressValue} /><Text style={styles.progressCaption}>{t('dashboard.completion')}</Text></View>
                 <View style={styles.largeChart}><ProgressLine points={progressPoints[selectedSite] ?? progressPoints['All Sites']} /></View>
                 <View style={styles.progressLegend}><Text style={styles.progressGain}>{t('dashboard.ahead')}</Text><Text style={styles.progressRange}>08.05 — 05.06</Text></View>
                 <Text style={styles.panelLead}>{t('dashboard.progressHint')}</Text>
@@ -417,7 +494,7 @@ export function DashboardScreen({navigation}: {navigation: any}) {
                   {visibleReports.length ? visibleReports.map(report => (
                     <Pressable key={report.id} onPress={() => openReport(report)} style={styles.reportRow}>
                       <View style={styles.activityIcon}><ClipboardList size={18} color={colors.warning} /></View>
-                      <View style={styles.activityText}><Text style={styles.activityTitle}>{localizedSiteName(reportSite(report), t)} • {report.reportDate}</Text><Text numberOfLines={2} style={styles.activityMeta}>{report.summary}</Text></View>
+                      <View style={styles.activityText}><Text style={styles.activityTitle}>{localizedSiteName(reportSite(report), t)} • {report.reportDate}</Text><Text numberOfLines={2} style={styles.activityMeta}>{getLocalizedReport(report, i18n.language).summary}</Text></View>
                       <ChevronRight size={18} color={colors.faint} />
                     </Pressable>
                   )) : <View style={styles.emptyState}><ClipboardList size={34} color={colors.faint} /><Text style={styles.emptyTitle}>{t('dashboard.noReports')}</Text><Text style={styles.emptyCopy}>{t('dashboard.noReportsHint')}</Text></View>}
@@ -430,14 +507,14 @@ export function DashboardScreen({navigation}: {navigation: any}) {
                 <ScrollView showsVerticalScrollIndicator={false}>
                   {selectedReport ? <>
                     <Text style={styles.reportDetailTitle}>{localizedSiteName(reportSite(selectedReport), t)} • {selectedReport.reportDate}</Text>
-                    <Text style={styles.reportDetailSummary}>{selectedReport.summary}</Text>
+                    <Text style={styles.reportDetailSummary}>{getLocalizedReport(selectedReport, i18n.language).summary}</Text>
                     {[
                       [t('dashboard.workers'), selectedReport.workersCount?.toString() ?? t('common.notSpecified')],
                       [t('dashboard.location'), selectedReport.floors.join(', ') || t('common.notSpecified')],
-                      [t('dashboard.workHours'), selectedReport.workHours || t('common.notSpecified')],
-                      [t('dashboard.missingMaterials'), selectedReport.missingMaterials.map(item => `${item.name} ${item.quantity}`).join(', ') || t('common.none')],
-                      [t('dashboard.delays'), selectedReport.delays.map(item => item.reason).join(', ') || t('common.none')],
-                      [t('dashboard.nextSteps'), selectedReport.nextDayTasks.join(', ') || t('common.none')],
+                      [t('dashboard.workHours'), getLocalizedReport(selectedReport, i18n.language).workHours || t('common.notSpecified')],
+                      [t('dashboard.missingMaterials'), getLocalizedReport(selectedReport, i18n.language).missingMaterials.map(item => `${item.name} ${item.quantity}`).join(', ') || t('common.none')],
+                      [t('dashboard.delays'), getLocalizedReport(selectedReport, i18n.language).delays.map(item => item.reason).join(', ') || t('common.none')],
+                      [t('dashboard.nextSteps'), getLocalizedReport(selectedReport, i18n.language).nextDayTasks.join(', ') || t('common.none')],
                     ].map(([label, value]) => <View key={label} style={styles.reportFact}><Text style={styles.reportFactLabel}>{label}</Text><Text style={styles.reportFactValue}>{value}</Text></View>)}
                   </> : null}
                 </ScrollView>
@@ -446,7 +523,24 @@ export function DashboardScreen({navigation}: {navigation: any}) {
 
             {panel === 'checklist' ? (
               <><PanelHeader title={t('dashboard.checklistTitle')} onClose={() => setPanel(null)} />
-                <Text style={styles.panelLead}>{t('dashboard.completedCount', {done: dashboard.checklist.filter(item => item.done).length, total: dashboard.checklist.length})}</Text>
+                <View style={[styles.checklistPanelStatus, checklistStats.complete ? styles.checklistPanelStatusDone : styles.checklistPanelStatusOpen]}>
+                  <View style={styles.checklistPanelStatusTop}>
+                    {checklistStats.complete ? <CheckCircle2 size={20} color={colors.success} /> : <AlertTriangle size={20} color={colors.warning} />}
+                    <Text style={styles.checklistPanelStatusTitle}>
+                      {checklistStats.complete ? t('dashboard.checklistComplete') : t('dashboard.checklistIncomplete')}
+                    </Text>
+                  </View>
+                  <Text style={styles.checklistPanelStatusText}>
+                    {checklistStats.complete
+                      ? t('dashboard.checklistNotificationCompleteDetail', {
+                          time: dashboard.checklistSubmittedAt
+                            ? new Intl.DateTimeFormat(i18n.language, {hour: '2-digit', minute: '2-digit'}).format(new Date(dashboard.checklistSubmittedAt))
+                            : t('common.today'),
+                        })
+                      : t('dashboard.checklistNotificationDueDetail', {count: checklistStats.missing})}
+                  </Text>
+                </View>
+                <Text style={styles.panelLead}>{t('dashboard.completedCount', {done: checklistStats.done, total: checklistStats.total})}</Text>
                 {dashboard.checklist.map(item => (
                   <Pressable key={item.id} onPress={() => toggleChecklist(item.id)} style={styles.checkRow}>
                     <View style={[styles.checkbox, item.done && styles.checkboxDone]}>{item.done ? <Check size={16} color={colors.text} /> : null}</View>
@@ -485,6 +579,7 @@ export function DashboardScreen({navigation}: {navigation: any}) {
 
 const styles = StyleSheet.create({
   safe: {flex: 1, backgroundColor: colors.background},
+  focusRoot: {flex: 1},
   content: {padding: 20, paddingBottom: 112, gap: 14},
   header: {alignItems: 'flex-start', flexDirection: 'row', justifyContent: 'space-between', marginTop: 4},
   headerCopy: {flex: 1},
@@ -511,6 +606,19 @@ const styles = StyleSheet.create({
   activityMeta: {color: colors.muted, fontSize: 11, lineHeight: 15, marginTop: 2},
   statusPill: {backgroundColor: '#241E55', borderRadius: 9, paddingHorizontal: 8, paddingVertical: 6},
   statusPillText: {color: '#BCA8FF', fontSize: 10, fontWeight: '900'},
+  checklistBadge: {borderRadius: 10, borderWidth: 1, paddingHorizontal: 9, paddingVertical: 5},
+  checklistBadgeDone: {backgroundColor: colors.successSoft, borderColor: colors.success},
+  checklistBadgeOpen: {backgroundColor: colors.warningSoft, borderColor: colors.warning},
+  checklistBadgeText: {fontSize: 10, fontWeight: '900'},
+  checklistSummary: {alignItems: 'center', flexDirection: 'row', gap: 12},
+  checklistRing: {alignItems: 'baseline', backgroundColor: colors.surface2, borderRadius: 18, borderWidth: 2, flexDirection: 'row', height: 58, justifyContent: 'center', width: 58},
+  checklistDone: {color: colors.text, fontSize: 24, fontWeight: '900'},
+  checklistTotal: {color: colors.muted, fontSize: 12, fontWeight: '900'},
+  checklistCopy: {flex: 1},
+  checklistTitleText: {color: colors.text, fontSize: 15, fontWeight: '900'},
+  checklistMeta: {color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 4},
+  checklistProgressTrack: {backgroundColor: colors.surface3, borderRadius: 999, height: 7, marginTop: 14, overflow: 'hidden'},
+  checklistProgressFill: {borderRadius: 999, height: '100%'},
   quick: {flexDirection: 'row', gap: 10},
   quickButton: {alignItems: 'center', backgroundColor: colors.surface, borderColor: colors.border, borderRadius: radii.md, borderWidth: 1, flex: 1, paddingVertical: 12},
   quickPressed: {backgroundColor: colors.primarySoft, transform: [{scale: 0.97}]},
@@ -527,6 +635,12 @@ const styles = StyleSheet.create({
   panelTitle: {color: colors.text, fontSize: 21, fontWeight: '900'},
   closeButton: {alignItems: 'center', backgroundColor: colors.surface3, borderRadius: 18, height: 36, justifyContent: 'center', width: 36},
   panelLead: {color: colors.muted, fontSize: 12, lineHeight: 18, marginBottom: 15},
+  checklistPanelStatus: {borderRadius: 16, borderWidth: 1, marginBottom: 14, padding: 14},
+  checklistPanelStatusDone: {backgroundColor: colors.successSoft, borderColor: colors.success},
+  checklistPanelStatusOpen: {backgroundColor: colors.warningSoft, borderColor: colors.warning},
+  checklistPanelStatusTop: {alignItems: 'center', flexDirection: 'row', gap: 9},
+  checklistPanelStatusTitle: {color: colors.text, fontSize: 14, fontWeight: '900'},
+  checklistPanelStatusText: {color: colors.muted, fontSize: 12, lineHeight: 18, marginTop: 7},
   siteRow: {alignItems: 'center', borderColor: colors.border, borderRadius: 15, borderWidth: 1, flexDirection: 'row', gap: 12, marginBottom: 10, padding: 13},
   siteRowActive: {backgroundColor: colors.primarySoft, borderColor: colors.primary},
   siteIcon: {alignItems: 'center', backgroundColor: colors.surface3, borderRadius: 10, height: 40, justifyContent: 'center', width: 40},

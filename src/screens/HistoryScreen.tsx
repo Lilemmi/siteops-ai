@@ -6,9 +6,10 @@ import {getReports} from '../services/reportStorage';
 import {colors, shadows} from '../theme';
 import {StructuredReport} from '../types/report';
 import {useTranslation} from 'react-i18next';
+import {getLocalizedReport} from '../services/contentLocalization';
 
 export function HistoryScreen() {
-  const {t} = useTranslation();
+  const {t, i18n} = useTranslation();
   const [reports, setReports] = useState<StructuredReport[]>([]);
 
   useFocusEffect(
@@ -31,20 +32,23 @@ export function HistoryScreen() {
             <Text style={styles.emptyText}>{t('history.emptyHint')}</Text>
           </View>
         ) : (
-          reports.map(report => (
-            <View key={report.id} style={styles.card}>
-              <View style={styles.cardTop}>
-                <Text style={styles.date}>{report.reportDate}</Text>
-                <Text style={styles.badge}>{report.source.toUpperCase()}</Text>
+          reports.map(report => {
+            const localized = getLocalizedReport(report, i18n.language);
+            return (
+              <View key={report.id} style={styles.card}>
+                <View style={styles.cardTop}>
+                  <Text style={styles.date}>{report.reportDate}</Text>
+                  <Text style={styles.badge}>{report.source.toUpperCase()}</Text>
+                </View>
+                <Text style={styles.summary}>{localized.summary}</Text>
+                <View style={styles.metrics}>
+                  <Text style={styles.metric}>◉ {report.workersCount ?? '—'} {t('history.workers')}</Text>
+                  <Text style={styles.metric}>⌁ {report.floors.join(', ') || '—'} {t('history.floor')}</Text>
+                  <Text style={styles.metric}>⚠ {localized.delays.length} {t('history.delays')}</Text>
+                </View>
               </View>
-              <Text style={styles.summary}>{report.summary}</Text>
-              <View style={styles.metrics}>
-                <Text style={styles.metric}>◉ {report.workersCount ?? '—'} {t('history.workers')}</Text>
-                <Text style={styles.metric}>⌁ {report.floors.join(', ') || '—'} {t('history.floor')}</Text>
-                <Text style={styles.metric}>⚠ {report.delays.length} {t('history.delays')}</Text>
-              </View>
-            </View>
-          ))
+            );
+          })
         )}
       </ScrollView>
     </SafeAreaView>

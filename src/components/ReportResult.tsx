@@ -15,6 +15,7 @@ import {
   Wrench,
 } from 'lucide-react-native';
 import {shareReportCsv, shareReportPdf} from '../services/reportExport';
+import {getLocalizedReport} from '../services/contentLocalization';
 import {colors, radii} from '../theme';
 import {StructuredReport} from '../types/report';
 import {AppCard} from './AppCard';
@@ -66,7 +67,8 @@ export function ReportResult({
   onEdit?: () => void;
   onCreateTasks?: () => void;
 }) {
-  const {t} = useTranslation();
+  const {t, i18n} = useTranslation();
+  const localized = getLocalizedReport(report, i18n.language);
   async function handleExport() {
     try {
       await shareReportCsv(report);
@@ -90,7 +92,7 @@ export function ReportResult({
           <Sparkles size={34} color={colors.text} />
         </LinearGradient>
         <Text style={styles.done}>{t('report.analyzed')}</Text>
-        <Text style={styles.summary}>{report.summary}</Text>
+        <Text style={styles.summary}>{localized.summary}</Text>
       </View>
 
       <View style={styles.stack}>
@@ -103,46 +105,46 @@ export function ReportResult({
         <InsightRow
           icon={<Wrench size={18} color={colors.success} />}
           label={t('report.tasksCompleted')}
-          value={report.completedWork.map(item => item.description).join(', ') || t('common.notSpecified')}
+          value={localized.completedWork.map(item => item.description).join(', ') || t('common.notSpecified')}
           tone={colors.success}
         />
         <InsightRow
           icon={<MapPin size={18} color={colors.primary2} />}
           label={t('report.location')}
-          value={report.floors.length ? t('tasks.level', {level: report.floors.join(', ')}) : report.site}
+          value={report.floors.length ? t('tasks.level', {level: report.floors.join(', ')}) : localized.site}
           tone={colors.primary2}
         />
         <InsightRow
           icon={<AlertTriangle size={18} color={colors.danger} />}
           label={t('report.issues')}
-          value={report.delays.map(item => item.reason).join(', ') || t('common.none')}
+          value={localized.delays.map(item => item.reason).join(', ') || t('common.none')}
           tone={colors.danger}
         />
         <InsightRow
           icon={<PackageX size={18} color={colors.warning} />}
           label={t('report.materialsMissing')}
-          value={report.missingMaterials.map(item => `${item.name} ${item.quantity}`).join(', ') || t('common.none')}
+          value={localized.missingMaterials.map(item => `${item.name} ${item.quantity}`).join(', ') || t('common.none')}
           tone={colors.warning}
         />
         <InsightRow
           icon={<Clock3 size={18} color={colors.danger} />}
           label={t('report.delays')}
-          value={report.delays.map(item => item.impact).join(', ') || t('common.none')}
+          value={localized.delays.map(item => item.impact).join(', ') || t('common.none')}
           tone={colors.danger}
         />
       </View>
 
       <AppCard title={t('report.nextSteps')}>
-        <Bullets items={report.nextDayTasks} />
+        <Bullets items={localized.nextDayTasks} />
       </AppCard>
 
-      <AppCard title={t('report.managerMessage')} right={<Text style={styles.heLabel}>{t('common.hebrew')}</Text>}>
-        <Text style={styles.hebrew}>{report.managerMessageHebrew}</Text>
+      <AppCard title={t('report.managerMessage')}>
+        <Text style={[styles.message, i18n.language === 'he' && styles.hebrew]}>{localized.managerMessage}</Text>
       </AppCard>
 
       {report.contradictions.length ? (
         <AppCard title={t('report.contradictions')}>
-          <Bullets items={report.contradictions} />
+          <Bullets items={localized.contradictions} />
         </AppCard>
       ) : null}
 
@@ -200,6 +202,7 @@ const styles = StyleSheet.create({
   bullet: {color: colors.text, fontSize: 14, lineHeight: 21},
   empty: {color: colors.muted, fontSize: 13},
   heLabel: {color: colors.primary2, fontSize: 11, fontWeight: '900'},
+  message: {color: colors.text, fontSize: 15, lineHeight: 24},
   hebrew: {color: colors.text, fontSize: 15, lineHeight: 24, textAlign: 'right', writingDirection: 'rtl'},
   photos: {gap: 10},
   photo: {backgroundColor: colors.surface2, borderRadius: 14, height: 92, width: 92},

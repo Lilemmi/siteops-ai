@@ -2,6 +2,7 @@ import React, {ReactNode} from 'react';
 import {StyleSheet, Text, View, ViewStyle} from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import {colors, radii, shadows} from '../theme';
+import {FadeInView} from './AnimatedUI';
 
 export function AppCard({
   children,
@@ -16,7 +17,7 @@ export function AppCard({
   style?: ViewStyle;
   accent?: boolean;
 }) {
-  return (
+  const card = (
     <LinearGradient
       colors={accent ? ['#182342', '#101827'] : ['#111928', '#0C1321']}
       start={{x: 0, y: 0}}
@@ -31,6 +32,8 @@ export function AppCard({
       {children}
     </LinearGradient>
   );
+
+  return <FadeInView style={style}>{card}</FadeInView>;
 }
 
 const styles = StyleSheet.create({

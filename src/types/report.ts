@@ -18,6 +18,22 @@ export interface DelayItem {
   impact: string;
 }
 
+export interface ReportTranslation {
+  site: string;
+  workHours: string;
+  paymentType: string;
+  completedWork: WorkItem[];
+  usedMaterials: MaterialItem[];
+  missingMaterials: MaterialItem[];
+  delays: DelayItem[];
+  responsiblePeople: string[];
+  financialImpact: string;
+  nextDayTasks: string[];
+  contradictions: string[];
+  managerMessage: string;
+  summary: string;
+}
+
 export interface ReportPhoto {
   id: string;
   uri: string;
@@ -47,6 +63,7 @@ export interface StructuredReport {
   contradictions: string[];
   managerMessageHebrew: string;
   summary: string;
+  translations?: Partial<Record<'en' | 'ru' | 'he', ReportTranslation>>;
   siteId?: string;
   photos?: ReportPhoto[];
   syncStatus?: ReportSyncStatus;

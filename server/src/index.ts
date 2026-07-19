@@ -15,6 +15,37 @@ const upload = multer({
   limits: {fileSize: 25 * 1024 * 1024, files: 1},
 });
 
+const workItemSchema = z.object({
+  description: z.string(),
+  workers: z.number().int().nullable(),
+  floors: z.array(z.string()),
+});
+
+const materialItemSchema = z.object({name: z.string(), quantity: z.string()});
+const delayItemSchema = z.object({reason: z.string(), impact: z.string()});
+
+const reportTranslationSchema = z.object({
+  site: z.string(),
+  workHours: z.string(),
+  paymentType: z.string(),
+  completedWork: z.array(workItemSchema),
+  usedMaterials: z.array(materialItemSchema),
+  missingMaterials: z.array(materialItemSchema),
+  delays: z.array(delayItemSchema),
+  responsiblePeople: z.array(z.string()),
+  financialImpact: z.string(),
+  nextDayTasks: z.array(z.string()),
+  contradictions: z.array(z.string()),
+  managerMessage: z.string(),
+  summary: z.string(),
+});
+
+const translatedFieldsSchema = z.object({
+  en: z.record(z.string(), z.string()),
+  ru: z.record(z.string(), z.string()),
+  he: z.record(z.string(), z.string()),
+});
+
 const reportSchema = z.object({
   inputLanguage: z.enum(['ru', 'he', 'en', 'unknown']),
   site: z.string(),
@@ -22,21 +53,22 @@ const reportSchema = z.object({
   workersCount: z.number().int().nullable(),
   workHours: z.string(),
   paymentType: z.string(),
-  completedWork: z.array(z.object({
-    description: z.string(),
-    workers: z.number().int().nullable(),
-    floors: z.array(z.string()),
-  })),
+  completedWork: z.array(workItemSchema),
   floors: z.array(z.string()),
-  usedMaterials: z.array(z.object({name: z.string(), quantity: z.string()})),
-  missingMaterials: z.array(z.object({name: z.string(), quantity: z.string()})),
-  delays: z.array(z.object({reason: z.string(), impact: z.string()})),
+  usedMaterials: z.array(materialItemSchema),
+  missingMaterials: z.array(materialItemSchema),
+  delays: z.array(delayItemSchema),
   responsiblePeople: z.array(z.string()),
   financialImpact: z.string(),
   nextDayTasks: z.array(z.string()),
   contradictions: z.array(z.string()),
   managerMessageHebrew: z.string(),
   summary: z.string(),
+  translations: z.object({
+    en: reportTranslationSchema,
+    ru: reportTranslationSchema,
+    he: reportTranslationSchema,
+  }),
 });
 
 app.use(express.json({limit: '100kb'}));
@@ -69,6 +101,57 @@ app.post('/api/devices/register', (request, response) => {
   }
   registeredDevices.set(token, {token, platform, updatedAt: new Date().toISOString()});
   response.json({ok: true});
+});
+
+app.post('/api/translate/fields', async (request, response) => {
+  const fields = request.body?.fields && typeof request.body.fields === 'object'
+    ? request.body.fields as Record<string, unknown>
+    : {};
+  const cleanFields = Object.fromEntries(
+    Object.entries(fields)
+      .filter(([, value]) => typeof value === 'string')
+      .map(([key, value]) => [key, String(value).trim()])
+      .filter(([key, value]) => key.length > 0 && value.length > 0 && value.length <= 2000),
+  );
+
+  if (!Object.keys(cleanFields).length) {
+    response.status(400).json({error: 'At least one text field is required.'});
+    return;
+  }
+  if (!process.env.OPENAI_API_KEY) {
+    response.status(503).json({error: 'OPENAI_API_KEY is not configured.'});
+    return;
+  }
+
+  try {
+    const client = new OpenAI({apiKey: process.env.OPENAI_API_KEY});
+    const result = await client.responses.parse({
+      model: process.env.OPENAI_MODEL ?? 'gpt-5.6-terra',
+      reasoning: {effort: 'low'},
+      input: [
+        {
+          role: 'system',
+          content:
+            'Translate short construction app fields into English, Russian, and Hebrew. Preserve numbers, dates, floor identifiers, section letters, quantities, dimensions, invoice numbers, supplier names, personal names, and proper names. Return the same field keys under en, ru, and he. Use concise professional construction terminology.',
+        },
+        {
+          role: 'user',
+          content: JSON.stringify(cleanFields),
+        },
+      ],
+      text: {format: zodTextFormat(translatedFieldsSchema, 'translated_fields')},
+    });
+
+    if (!result.output_parsed) {
+      response.status(502).json({error: 'The model did not return translations.'});
+      return;
+    }
+
+    response.json({translations: result.output_parsed});
+  } catch (error) {
+    console.error(error);
+    response.status(502).json({error: 'Translation request failed.'});
+  }
 });
 
 app.post('/api/audio/transcribe', upload.single('audio'), async (request, response) => {
@@ -142,7 +225,7 @@ app.post('/api/reports/analyze', async (request, response) => {
         {
           role: 'system',
           content:
-            'You extract construction daily reports. Never invent facts. If a value is not explicitly present, return null for nullable fields and a natural equivalent of "Not specified" for required text fields. Do not invent floors, work hours, payment type, amounts, suppliers, responsible people, or financial sums. Separate facts from possible assumptions. Preserve floor identifiers, sections, quantities, dimensions, and material names exactly. Detect the input language. Write summary, work descriptions, materials, impacts, financial consequences, next-day tasks, contradictions, and all missing-value labels in the same language as the original report (Russian, Hebrew, or English). Write managerMessageHebrew in professional, concise Hebrew regardless of input language. Surface missing information and possible contradictions explicitly.',
+            'You extract construction daily reports. Never invent facts. If a value is not explicitly present, return null for nullable fields and a natural equivalent of "Not specified" for required text fields. Do not invent floors, work hours, payment type, amounts, suppliers, responsible people, or financial sums. Separate facts from possible assumptions. Preserve floor identifiers, sections, quantities, dimensions, and material names exactly. Detect the input language. The top-level report fields must be written in the same language as the original report (Russian, Hebrew, or English). Also fill translations.en, translations.ru, and translations.he with professional construction-language translations of every human-readable structured field: site, workHours, paymentType, completedWork descriptions, materials, delays, responsiblePeople, financialImpact, nextDayTasks, contradictions, managerMessage, and summary. Keep numbers, floor identifiers, section letters, quantities, dimensions, invoice numbers, supplier names, and proper names unchanged across translations. managerMessageHebrew must remain professional Hebrew, and translations.he.managerMessage should match the Hebrew manager message. Surface missing information and possible contradictions explicitly.',
         },
         {
           role: 'user',

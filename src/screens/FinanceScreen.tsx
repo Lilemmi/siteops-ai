@@ -30,6 +30,7 @@ import {
   X,
 } from 'lucide-react-native';
 import {AppCard} from '../components/AppCard';
+import {AnimatedProgressFill, CountUpText, FocusFadeView} from '../components/AnimatedUI';
 import {
   CostCategory,
   expenseTotals,
@@ -46,6 +47,7 @@ import {colors, radii} from '../theme';
 import {StructuredReport} from '../types/report';
 import {localizedSiteName} from '../i18n';
 import {AppUser, can} from '../services/authService';
+import {getLocalizedReport} from '../services/contentLocalization';
 
 type Panel = 'sites' | 'addSite' | 'payments' | 'payment' | 'addPayment' | 'costs' | 'addExpense' | 'project' | null;
 
@@ -111,8 +113,11 @@ export function FinanceScreen({navigation, currentUser}: {navigation: any; curre
   const canDeleteSite = can(currentUser, 'site.delete');
 
   const financialFlags = useMemo(
-    () => reports.flatMap(report => report.financialImpact ? [report.financialImpact] : []).slice(0, 4),
-    [reports],
+    () => reports.flatMap(report => {
+      const localized = getLocalizedReport(report, i18n.language);
+      return localized.financialImpact ? [localized.financialImpact] : [];
+    }).slice(0, 4),
+    [i18n.language, reports],
   );
 
   const money = useCallback((value: number) => new Intl.NumberFormat(i18n.language, {style: 'currency', currency: 'USD', maximumFractionDigits: 0}).format(value), [i18n.language]);
@@ -306,6 +311,7 @@ export function FinanceScreen({navigation, currentUser}: {navigation: any; curre
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
+      <FocusFadeView style={styles.focusRoot}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Pressable onPress={() => setPanel('sites')} style={styles.siteHero}>
           <View style={styles.heroCopy}>
@@ -323,12 +329,12 @@ export function FinanceScreen({navigation, currentUser}: {navigation: any; curre
         <AppCard title={t('finance.paymentsOverview')} right={<Pressable onPress={() => setPanel('payments')}><Text style={styles.link}>{t('common.viewAll')}</Text></Pressable>}>
           <Pressable onPress={() => setPanel('payments')}>
             <View style={styles.paymentTop}>
-              <View><Text style={styles.bigMoney}>{money(paid)}</Text><Text style={styles.muted}>{t('finance.paidToDate')}</Text></View>
-              <View style={styles.rightMoney}><Text style={styles.moneySmall}>{money(site.contractValue)}</Text><Text style={styles.muted}>{t('finance.contractValue')}</Text></View>
+              <View><CountUpText value={paid} formatter={money} style={styles.bigMoney} /><Text style={styles.muted}>{t('finance.paidToDate')}</Text></View>
+              <View style={styles.rightMoney}><CountUpText value={site.contractValue} formatter={money} style={styles.moneySmall} /><Text style={styles.muted}>{t('finance.contractValue')}</Text></View>
             </View>
             {pending > 0 ? <Text style={styles.pendingSummary}>{t('finance.pendingAmount', {amount: money(pending)})}</Text> : null}
-            <View style={styles.progressTrack}><LinearGradient colors={[colors.primary, colors.primary2]} style={[styles.progressFill, {width: `${paidPercent}%`}]} /></View>
-            <Text style={styles.percent}>{paidPercent}%</Text>
+            <View style={styles.progressTrack}><AnimatedProgressFill percent={paidPercent} style={styles.progressFillGradient} /></View>
+            <CountUpText value={paidPercent} formatter={value => `${value}%`} style={styles.percent} />
           </Pressable>
         </AppCard>
 
@@ -345,7 +351,7 @@ export function FinanceScreen({navigation, currentUser}: {navigation: any; curre
 
         <AppCard title={t('finance.costBreakdown')} right={<Pressable onPress={() => setPanel('costs')}><Text style={styles.link}>{t('common.viewReport')}</Text></Pressable>}>
           <Pressable onPress={() => setPanel('costs')} style={styles.breakdown}>
-            <LinearGradient colors={[colors.success, colors.primary, colors.primary2, colors.warning]} style={styles.donut}><View style={styles.donutInner}><Text style={styles.donutMoney}>{money(expenseTotal)}</Text><Text style={styles.muted}>{t('common.total')}</Text></View></LinearGradient>
+            <LinearGradient colors={[colors.success, colors.primary, colors.primary2, colors.warning]} style={styles.donut}><View style={styles.donutInner}><CountUpText value={expenseTotal} formatter={money} style={styles.donutMoney} /><Text style={styles.muted}>{t('common.total')}</Text></View></LinearGradient>
             <View style={styles.legend}>
               {(Object.keys(categoryColors) as CostCategory[]).map(category => {
                 const percent = expenseTotal ? Math.round((totals[category] / expenseTotal) * 100) : 0;
@@ -361,6 +367,7 @@ export function FinanceScreen({navigation, currentUser}: {navigation: any; curre
 
         <Pressable onPress={exportReport} style={styles.exportButton}><Download size={18} color={colors.text} /><Text style={styles.exportText}>{t('finance.exportReport')}</Text></Pressable>
       </ScrollView>
+      </FocusFadeView>
 
       {toast ? <View style={styles.toast}><Check size={16} color={colors.success} /><Text style={styles.toastText}>{toast}</Text></View> : null}
 
@@ -392,6 +399,7 @@ export function FinanceScreen({navigation, currentUser}: {navigation: any; curre
 
 const styles = StyleSheet.create({
   safe: {flex: 1, backgroundColor: colors.background},
+  focusRoot: {flex: 1},
   locked: {alignItems: 'center', flex: 1, justifyContent: 'center', padding: 28},
   lockedTitle: {color: colors.text, fontSize: 22, fontWeight: '900', marginTop: 14, textAlign: 'center'},
   lockedText: {color: colors.muted, fontSize: 14, lineHeight: 21, marginTop: 8, textAlign: 'center'},
@@ -402,7 +410,7 @@ const styles = StyleSheet.create({
   greenPill: {backgroundColor: colors.successSoft, color: colors.success}, orangePill: {backgroundColor: colors.warningSoft, color: colors.warning}, purplePill: {backgroundColor: '#241E55', color: '#BCA8FF'}, bluePill: {backgroundColor: colors.primarySoft, color: colors.primary},
   editProject: {alignItems: 'center', backgroundColor: colors.surface3, borderRadius: 14, height: 34, justifyContent: 'center', position: 'absolute', right: 12, top: 12, width: 34},
   link: {color: '#8EA8FF', fontSize: 12, fontWeight: '800'}, paymentTop: {flexDirection: 'row', justifyContent: 'space-between'}, bigMoney: {color: colors.text, fontSize: 28, fontWeight: '900'}, muted: {color: colors.muted, fontSize: 11, marginTop: 2}, rightMoney: {alignItems: 'flex-end'}, moneySmall: {color: colors.text, fontSize: 15, fontWeight: '900'},
-  pendingSummary: {color: colors.warning, fontSize: 11, fontWeight: '800', marginTop: 10}, progressTrack: {backgroundColor: colors.surface3, borderRadius: 8, height: 8, marginTop: 16, overflow: 'hidden'}, progressFill: {height: 8}, percent: {alignSelf: 'flex-end', color: colors.muted, fontSize: 11, marginTop: 6},
+  pendingSummary: {color: colors.warning, fontSize: 11, fontWeight: '800', marginTop: 10}, progressTrack: {backgroundColor: colors.surface3, borderRadius: 8, height: 8, marginTop: 16, overflow: 'hidden'}, progressFillGradient: {backgroundColor: colors.primary, height: 8}, percent: {alignSelf: 'flex-end', color: colors.muted, fontSize: 11, marginTop: 6},
   paymentRow: {alignItems: 'center', flexDirection: 'row', gap: 12, paddingVertical: 9}, paymentIcon: {alignItems: 'center', backgroundColor: colors.surface3, borderRadius: 9, height: 38, justifyContent: 'center', width: 38}, paymentCopy: {flex: 1}, paymentName: {color: colors.text, fontSize: 13, fontWeight: '900'}, paymentRight: {alignItems: 'flex-end'}, paymentAmount: {color: colors.text, fontSize: 12, fontWeight: '900'}, paymentStatus: {fontSize: 11, fontWeight: '900', marginTop: 3}, paid: {color: colors.success, fontSize: 11, fontWeight: '900'}, pending: {color: colors.warning, fontSize: 11, fontWeight: '900'}, empty: {color: colors.muted, fontSize: 12, paddingVertical: 12},
   breakdown: {alignItems: 'center', flexDirection: 'row', gap: 20}, donut: {alignItems: 'center', borderRadius: 58, height: 116, justifyContent: 'center', width: 116}, donutInner: {alignItems: 'center', backgroundColor: colors.surface, borderRadius: 43, height: 86, justifyContent: 'center', width: 86}, donutMoney: {color: colors.text, fontSize: 13, fontWeight: '900'}, legend: {flex: 1, gap: 9}, legendRow: {alignItems: 'center', flexDirection: 'row', gap: 8}, dot: {borderRadius: 4, height: 8, width: 8}, legendLabel: {color: colors.muted, flex: 1, fontSize: 12}, legendValue: {color: colors.text, fontSize: 12, fontWeight: '900'},
   flagRow: {alignItems: 'center', flexDirection: 'row', gap: 8, paddingVertical: 6}, flag: {color: colors.text, flex: 1, fontSize: 13, lineHeight: 19}, exportButton: {alignItems: 'center', backgroundColor: colors.primarySoft, borderColor: colors.primary, borderRadius: 16, borderWidth: 1, flexDirection: 'row', gap: 8, justifyContent: 'center', paddingVertical: 14}, exportText: {color: colors.text, fontSize: 13, fontWeight: '900'},

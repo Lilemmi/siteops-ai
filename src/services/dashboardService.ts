@@ -25,6 +25,8 @@ export interface ChatMessage {
 export interface DashboardState {
   selectedSite: string;
   notificationsRead: boolean;
+  checklistSubmittedAt?: string | null;
+  checklistLastNotifiedAt?: string | null;
   photos: DashboardPhoto[];
   checklist: ChecklistItem[];
   chat: ChatMessage[];
@@ -33,6 +35,8 @@ export interface DashboardState {
 const initialState: DashboardState = {
   selectedSite: 'All Sites',
   notificationsRead: false,
+  checklistSubmittedAt: null,
+  checklistLastNotifiedAt: null,
   photos: [],
   checklist: [
     {id: 'safety', label: 'Morning safety briefing completed', done: true},
@@ -60,6 +64,8 @@ export async function getDashboardState(): Promise<DashboardState> {
     return {
       ...initialState,
       ...saved,
+      checklistSubmittedAt: saved.checklistSubmittedAt ?? initialState.checklistSubmittedAt,
+      checklistLastNotifiedAt: saved.checklistLastNotifiedAt ?? initialState.checklistLastNotifiedAt,
       photos: saved.photos ?? initialState.photos,
       checklist: saved.checklist ?? initialState.checklist,
       chat: saved.chat ?? initialState.chat,

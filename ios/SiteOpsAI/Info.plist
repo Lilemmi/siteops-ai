@@ -37,6 +37,8 @@
 	<string>SiteOps AI uses selected photos to document construction progress in daily reports.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>SiteOps AI uses the microphone to capture spoken daily construction reports.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>SiteOps AI uses speech recognition to convert spoken daily construction reports into editable text.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

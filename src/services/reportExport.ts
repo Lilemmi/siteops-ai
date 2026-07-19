@@ -3,6 +3,7 @@ import Share from 'react-native-share';
 import {generatePDF} from 'react-native-html-to-pdf';
 import {StructuredReport} from '../types/report';
 import i18n from '../i18n';
+import {getLocalizedReport} from './contentLocalization';
 
 function csvCell(value: string | number | null | undefined) {
   const normalized = value == null ? '' : String(value);
@@ -18,17 +19,18 @@ function listText(items: string[]) {
 }
 
 export async function shareReportCsv(report: StructuredReport) {
+  const localized = getLocalizedReport(report, i18n.language);
   const rows = [
-    csvRow(i18n.t('export.site'), report.site),
+    csvRow(i18n.t('export.site'), localized.site),
     csvRow(i18n.t('export.date'), report.reportDate),
     csvRow(i18n.t('export.workers'), report.workersCount),
-    csvRow(i18n.t('export.workHours'), report.workHours),
-    csvRow(i18n.t('export.paymentType'), report.paymentType),
+    csvRow(i18n.t('export.workHours'), localized.workHours),
+    csvRow(i18n.t('export.paymentType'), localized.paymentType),
     csvRow(i18n.t('export.floors'), listText(report.floors)),
     csvRow(
       i18n.t('export.completedWork'),
       listText(
-        report.completedWork.map(
+        localized.completedWork.map(
           item =>
             `${item.description} | ${i18n.t('export.workers')}: ${item.workers ?? ''} | ${i18n.t('export.floors')}: ${listText(item.floors)}`,
         ),
@@ -36,19 +38,19 @@ export async function shareReportCsv(report: StructuredReport) {
     ),
     csvRow(
       i18n.t('export.usedMaterials'),
-      listText(report.usedMaterials.map(item => `${item.name}: ${item.quantity}`)),
+      listText(localized.usedMaterials.map(item => `${item.name}: ${item.quantity}`)),
     ),
     csvRow(
       i18n.t('export.missingMaterials'),
-      listText(report.missingMaterials.map(item => `${item.name}: ${item.quantity}`)),
+      listText(localized.missingMaterials.map(item => `${item.name}: ${item.quantity}`)),
     ),
-    csvRow(i18n.t('export.delays'), listText(report.delays.map(item => `${item.reason}: ${item.impact}`))),
-    csvRow(i18n.t('export.responsible'), listText(report.responsiblePeople)),
-    csvRow(i18n.t('export.financialImpact'), report.financialImpact),
-    csvRow(i18n.t('export.nextTasks'), listText(report.nextDayTasks)),
-    csvRow(i18n.t('export.contradictions'), listText(report.contradictions)),
-    csvRow(i18n.t('export.managerMessage'), report.managerMessageHebrew),
-    csvRow(i18n.t('export.summary'), report.summary),
+    csvRow(i18n.t('export.delays'), listText(localized.delays.map(item => `${item.reason}: ${item.impact}`))),
+    csvRow(i18n.t('export.responsible'), listText(localized.responsiblePeople)),
+    csvRow(i18n.t('export.financialImpact'), localized.financialImpact),
+    csvRow(i18n.t('export.nextTasks'), listText(localized.nextDayTasks)),
+    csvRow(i18n.t('export.contradictions'), listText(localized.contradictions)),
+    csvRow(i18n.t('export.managerMessage'), localized.managerMessage),
+    csvRow(i18n.t('export.summary'), localized.summary),
     csvRow(i18n.t('export.original'), report.originalText),
   ];
 
@@ -83,10 +85,11 @@ function htmlList(items: string[]) {
 }
 
 function reportHtml(report: StructuredReport) {
-  const missing = report.missingMaterials.map(item => `${item.name} ${item.quantity}`.trim());
-  const used = report.usedMaterials.map(item => `${item.name} ${item.quantity}`.trim());
-  const delays = report.delays.map(item => `${item.reason}: ${item.impact}`);
-  const work = report.completedWork.map(item => item.description);
+  const localized = getLocalizedReport(report, i18n.language);
+  const missing = localized.missingMaterials.map(item => `${item.name} ${item.quantity}`.trim());
+  const used = localized.usedMaterials.map(item => `${item.name} ${item.quantity}`.trim());
+  const delays = localized.delays.map(item => `${item.reason}: ${item.impact}`);
+  const work = localized.completedWork.map(item => item.description);
   const photos = report.photos ?? [];
   return `
     <!doctype html>
@@ -116,23 +119,23 @@ function reportHtml(report: StructuredReport) {
       <body>
         <div class="brand">SiteOps AI</div>
         <h1>${escapeHtml(i18n.t('export.title'))}</h1>
-        <div class="meta">${escapeHtml(report.site)} • ${escapeHtml(report.reportDate)} • ${escapeHtml(report.source.toUpperCase())}</div>
+        <div class="meta">${escapeHtml(localized.site)} • ${escapeHtml(report.reportDate)} • ${escapeHtml(report.source.toUpperCase())}</div>
         ${report.source === 'demo' ? `<div class="warning">${escapeHtml(i18n.t('report.demoWarning'))}</div>` : ''}
-        <p class="summary">${escapeHtml(report.summary)}</p>
+        <p class="summary">${escapeHtml(localized.summary)}</p>
         <div class="grid">
           <div class="card"><div class="label">${escapeHtml(i18n.t('export.workers'))}</div><div class="value">${escapeHtml(report.workersCount ?? i18n.t('common.notSpecified'))}</div></div>
           <div class="card"><div class="label">${escapeHtml(i18n.t('export.floors'))}</div><div class="value">${escapeHtml(report.floors.join(', ') || i18n.t('common.notSpecified'))}</div></div>
-          <div class="card"><div class="label">${escapeHtml(i18n.t('export.workHours'))}</div><div class="value">${escapeHtml(report.workHours || i18n.t('common.notSpecified'))}</div></div>
-          <div class="card"><div class="label">${escapeHtml(i18n.t('export.paymentType'))}</div><div class="value">${escapeHtml(report.paymentType || i18n.t('common.notSpecified'))}</div></div>
+          <div class="card"><div class="label">${escapeHtml(i18n.t('export.workHours'))}</div><div class="value">${escapeHtml(localized.workHours || i18n.t('common.notSpecified'))}</div></div>
+          <div class="card"><div class="label">${escapeHtml(i18n.t('export.paymentType'))}</div><div class="value">${escapeHtml(localized.paymentType || i18n.t('common.notSpecified'))}</div></div>
         </div>
         <h2>${escapeHtml(i18n.t('export.completedWork'))}</h2>${htmlList(work)}
         <h2>${escapeHtml(i18n.t('export.usedMaterials'))}</h2>${htmlList(used)}
         <h2>${escapeHtml(i18n.t('export.missingMaterials'))}</h2>${htmlList(missing)}
         <h2>${escapeHtml(i18n.t('export.delays'))}</h2>${htmlList(delays)}
-        <h2>${escapeHtml(i18n.t('export.nextTasks'))}</h2>${htmlList(report.nextDayTasks)}
-        <h2>${escapeHtml(i18n.t('export.financialImpact'))}</h2><p>${escapeHtml(report.financialImpact || i18n.t('common.none'))}</p>
+        <h2>${escapeHtml(i18n.t('export.nextTasks'))}</h2>${htmlList(localized.nextDayTasks)}
+        <h2>${escapeHtml(i18n.t('export.financialImpact'))}</h2><p>${escapeHtml(localized.financialImpact || i18n.t('common.none'))}</p>
         ${photos.length ? `<h2>${escapeHtml(i18n.t('report.photosInReport'))}</h2><div class="photos">${photos.map(photo => `<img class="photo" src="${escapeHtml(photo.uri)}" />`).join('')}</div>` : ''}
-        <h2>${escapeHtml(i18n.t('export.managerMessage'))}</h2><div class="hebrew">${escapeHtml(report.managerMessageHebrew || i18n.t('common.none'))}</div>
+        <h2>${escapeHtml(i18n.t('export.managerMessage'))}</h2><div class="hebrew">${escapeHtml(localized.managerMessage || i18n.t('common.none'))}</div>
       </body>
     </html>
   `;

@@ -1,5 +1,5 @@
-import React, {useEffect, useState} from 'react';
-import {Platform, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
+import React, {useEffect, useRef, useState} from 'react';
+import {Animated, Easing, Platform, StatusBar, StyleSheet, Text, View} from 'react-native';
 import {NavigationContainer} from '@react-navigation/native';
 import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
@@ -34,12 +34,37 @@ const icons = {
 };
 
 function CenterTabIcon({focused}: {focused: boolean}) {
+  const pulse = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: focused ? 1.08 : 1.04,
+          duration: 720,
+          easing: Easing.inOut(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 720,
+          easing: Easing.inOut(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [focused, pulse]);
+
   return (
-    <LinearGradient
-      colors={focused ? [colors.primary, colors.primary2] : ['#25314B', '#1A2337']}
-      style={styles.centerButton}>
-      <Plus size={28} color={colors.text} strokeWidth={2.6} />
-    </LinearGradient>
+    <Animated.View style={{transform: [{scale: pulse}]}}>
+      <LinearGradient
+        colors={focused ? [colors.primary, colors.primary2] : ['#25314B', '#1A2337']}
+        style={styles.centerButton}>
+        <Plus size={28} color={colors.text} strokeWidth={2.6} />
+      </LinearGradient>
+    </Animated.View>
   );
 }
 
@@ -72,9 +97,6 @@ function getScreenOptions({route}: {route: {name: string}}) {
       backgroundColor: '#080D18',
       position: 'absolute' as const,
     },
-    tabBarButton: (props: any) => (
-      <Pressable {...props} android_ripple={{color: 'transparent'}} />
-    ),
     tabBarLabel: ({focused, color}: {focused: boolean; color: string}) => (
       <TranslatedTabLabel routeName={route.name} focused={focused} color={color} />
     ),

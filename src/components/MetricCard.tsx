@@ -1,8 +1,9 @@
 import React from 'react';
-import {Pressable, StyleSheet, Text, View} from 'react-native';
+import {StyleSheet, Text, View} from 'react-native';
 import {LucideIcon} from 'lucide-react-native';
 import {AppCard} from './AppCard';
 import {colors} from '../theme';
+import {CountUpString, PressScale} from './AnimatedUI';
 
 export function MetricCard({
   label,
@@ -33,7 +34,7 @@ export function MetricCard({
         <Text style={styles.label}>{label}</Text>
         <Icon size={17} color={toneColor} />
       </View>
-      <Text style={styles.value}>{value}</Text>
+      <CountUpString value={value} style={styles.value} />
       <Text style={[styles.delta, {color: toneColor}]}>{delta}</Text>
     </AppCard>
   );
@@ -43,19 +44,18 @@ export function MetricCard({
   }
 
   return (
-    <Pressable
+    <PressScale
       accessibilityRole="button"
       onPress={onPress}
-      style={({pressed}) => [styles.pressable, pressed && styles.pressed]}>
+      style={styles.pressable}>
       {content}
-    </Pressable>
+    </PressScale>
   );
 }
 
 const styles = StyleSheet.create({
   card: {flex: 1, minHeight: 98},
   pressable: {flex: 1},
-  pressed: {opacity: 0.72, transform: [{scale: 0.985}]},
   top: {flexDirection: 'row', justifyContent: 'space-between', gap: 8},
   label: {color: colors.muted, fontSize: 11, fontWeight: '700'},
   value: {color: colors.text, fontSize: 28, fontWeight: '900', marginTop: 9},
