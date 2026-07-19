@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import {randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual} from 'node:crypto';
+import {promisify} from 'node:util';
 import express from 'express';
 import multer from 'multer';
 import OpenAI from 'openai';
@@ -10,6 +12,8 @@ import {z} from 'zod';
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
 const {Pool} = pg;
+const scrypt = promisify(scryptCallback);
+const sessionTtlDays = Number(process.env.SESSION_TTL_DAYS ?? 30);
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
@@ -31,6 +35,20 @@ const workItemSchema = z.object({
 
 const materialItemSchema = z.object({name: z.string(), quantity: z.string()});
 const delayItemSchema = z.object({reason: z.string(), impact: z.string()});
+const roleSchema = z.enum(['owner', 'manager', 'foreman', 'accountant', 'worker']);
+
+const authRegisterSchema = z.object({
+  email: z.string().email().max(320),
+  password: z.string().min(6).max(200),
+  name: z.string().trim().min(2).max(120),
+  role: roleSchema,
+  companyName: z.string().trim().min(2).max(160),
+});
+
+const authLoginSchema = z.object({
+  email: z.string().email().max(320),
+  password: z.string().min(1).max(200),
+});
 
 const reportTranslationSchema = z.object({
   site: z.string(),
@@ -79,6 +97,81 @@ const reportSchema = z.object({
   }),
 });
 
+const judgeAccounts = [
+  {id: 'judge-owner', email: 'owner@siteops.ai', password: 'demo123', name: 'Owner Demo', role: 'owner', companyId: 'demo-company', companyName: 'SiteOps Demo'},
+  {id: 'judge-manager', email: 'manager@siteops.ai', password: 'demo123', name: 'Manager Demo', role: 'manager', companyId: 'demo-company', companyName: 'SiteOps Demo'},
+  {id: 'judge-foreman', email: 'foreman@siteops.ai', password: 'demo123', name: 'Foreman Demo', role: 'foreman', companyId: 'demo-company', companyName: 'SiteOps Demo'},
+  {id: 'judge-accountant', email: 'accountant@siteops.ai', password: 'demo123', name: 'Accountant Demo', role: 'accountant', companyId: 'demo-company', companyName: 'SiteOps Demo'},
+  {id: 'judge-worker', email: 'worker@siteops.ai', password: 'demo123', name: 'Worker Demo', role: 'worker', companyId: 'demo-company', companyName: 'SiteOps Demo'},
+] as const;
+
+type UserRow = {
+  id: string;
+  email: string;
+  password_hash: string;
+  name: string;
+  role: z.infer<typeof roleSchema>;
+  company_id: string;
+  company_name: string;
+  site_ids: unknown;
+  created_at: string;
+};
+
+async function hashPassword(password: string) {
+  const salt = randomBytes(16).toString('hex');
+  const derivedKey = await scrypt(password, salt, 64) as Buffer;
+  return `${salt}:${derivedKey.toString('hex')}`;
+}
+
+async function verifyPassword(password: string, storedHash: string) {
+  const [salt, key] = storedHash.split(':');
+  if (!salt || !key) {
+    return false;
+  }
+  const storedKey = Buffer.from(key, 'hex');
+  const derivedKey = await scrypt(password, salt, storedKey.length) as Buffer;
+  return storedKey.length === derivedKey.length && timingSafeEqual(storedKey, derivedKey);
+}
+
+function publicUser(row: UserRow) {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    role: row.role,
+    companyId: row.company_id,
+    companyName: row.company_name,
+    siteIds: row.site_ids,
+    createdAt: row.created_at,
+  };
+}
+
+async function createSession(userId: string) {
+  await ensureDatabaseReady();
+  const token = randomBytes(32).toString('base64url');
+  await pool!.query(
+    `insert into auth_sessions (token, user_id, expires_at) values ($1, $2, now() + ($3::text || ' days')::interval)`,
+    [token, userId, sessionTtlDays],
+  );
+  return token;
+}
+
+async function getUserByToken(token: string) {
+  await ensureDatabaseReady();
+  const result = await pool!.query<UserRow>(
+    `
+      select users.id, users.email, users.password_hash, users.name, users.role, users.company_id,
+             users.company_name, users.site_ids, users.created_at::text
+      from auth_sessions
+      join users on users.id = auth_sessions.user_id
+      where auth_sessions.token = $1 and auth_sessions.expires_at > now()
+      limit 1
+    `,
+    [token],
+  );
+  return result.rows[0] ?? null;
+}
+
 async function initializeDatabase() {
   if (!pool) {
     return;
@@ -111,7 +204,52 @@ async function initializeDatabase() {
 
     create index if not exists devices_platform_idx on devices (platform);
     create index if not exists devices_updated_at_idx on devices (updated_at desc);
+
+    create table if not exists users (
+      id text primary key,
+      email text not null unique,
+      password_hash text not null,
+      name text not null,
+      role text not null check (role in ('owner', 'manager', 'foreman', 'accountant', 'worker')),
+      company_id text not null,
+      company_name text not null,
+      site_ids jsonb not null default '"all"'::jsonb,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    create index if not exists users_company_id_idx on users (company_id);
+    create index if not exists users_role_idx on users (role);
+
+    create table if not exists auth_sessions (
+      token text primary key,
+      user_id text not null references users(id) on delete cascade,
+      created_at timestamptz not null default now(),
+      expires_at timestamptz not null
+    );
+
+    create index if not exists auth_sessions_user_id_idx on auth_sessions (user_id);
+    create index if not exists auth_sessions_expires_at_idx on auth_sessions (expires_at);
   `);
+
+  for (const account of judgeAccounts) {
+    await pool.query(
+      `
+        insert into users (id, email, password_hash, name, role, company_id, company_name, site_ids)
+        values ($1, $2, $3, $4, $5, $6, $7, '"all"'::jsonb)
+        on conflict (email) do nothing
+      `,
+      [
+        account.id,
+        account.email,
+        await hashPassword(account.password),
+        account.name,
+        account.role,
+        account.companyId,
+        account.companyName,
+      ],
+    );
+  }
 }
 
 const databaseReady = initializeDatabase().catch(error => {
@@ -155,6 +293,98 @@ app.get('/health', async (_request, response) => {
 app.get('/api/db/status', async (_request, response) => {
   const database = await getDatabaseStatus();
   response.status(database.configured && database.connected ? 200 : 503).json({ok: database.connected, database});
+});
+
+app.post('/api/auth/register', async (request, response) => {
+  const parsed = authRegisterSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({error: 'invalid-input'});
+    return;
+  }
+
+  try {
+    await ensureDatabaseReady();
+    const userId = randomUUID();
+    const companyId = `company-${randomUUID()}`;
+    const passwordHash = await hashPassword(parsed.data.password);
+    const result = await pool!.query<UserRow>(
+      `
+        insert into users (id, email, password_hash, name, role, company_id, company_name, site_ids)
+        values ($1, $2, $3, $4, $5, $6, $7, '"all"'::jsonb)
+        returning id, email, password_hash, name, role, company_id, company_name, site_ids, created_at::text
+      `,
+      [
+        userId,
+        parsed.data.email.trim().toLowerCase(),
+        passwordHash,
+        parsed.data.name.trim(),
+        parsed.data.role,
+        companyId,
+        parsed.data.companyName.trim(),
+      ],
+    );
+    const token = await createSession(userId);
+    response.status(201).json({ok: true, token, user: publicUser(result.rows[0])});
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === '23505') {
+      response.status(409).json({error: 'email-exists'});
+      return;
+    }
+    console.error(error);
+    response.status(503).json({error: 'Database is not available.'});
+  }
+});
+
+app.post('/api/auth/login', async (request, response) => {
+  const parsed = authLoginSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({error: 'invalid-email'});
+    return;
+  }
+
+  try {
+    await ensureDatabaseReady();
+    const result = await pool!.query<UserRow>(
+      `
+        select id, email, password_hash, name, role, company_id, company_name, site_ids, created_at::text
+        from users
+        where email = $1
+        limit 1
+      `,
+      [parsed.data.email.trim().toLowerCase()],
+    );
+    const user = result.rows[0];
+    if (!user || !(await verifyPassword(parsed.data.password, user.password_hash))) {
+      response.status(401).json({error: 'invalid-credentials'});
+      return;
+    }
+    const token = await createSession(user.id);
+    response.json({ok: true, token, user: publicUser(user)});
+  } catch (error) {
+    console.error(error);
+    response.status(503).json({error: 'Database is not available.'});
+  }
+});
+
+app.get('/api/auth/me', async (request, response) => {
+  const authorization = request.header('authorization') ?? '';
+  const token = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
+  if (!token) {
+    response.status(401).json({error: 'missing-token'});
+    return;
+  }
+
+  try {
+    const user = await getUserByToken(token);
+    if (!user) {
+      response.status(401).json({error: 'invalid-session'});
+      return;
+    }
+    response.json({ok: true, user: publicUser(user)});
+  } catch (error) {
+    console.error(error);
+    response.status(503).json({error: 'Database is not available.'});
+  }
 });
 
 app.post('/api/reports/sync', async (request, response) => {
@@ -377,7 +607,7 @@ app.post('/api/reports/analyze', async (request, response) => {
     }
 
     response.json({
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       createdAt: new Date().toISOString(),
       source: 'gpt',
       originalText: text,
