@@ -14,12 +14,6 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import Sound, {
-  AudioEncoderAndroidType,
-  AudioSourceAndroidType,
-  AVEncoderAudioQualityIOSType,
-  OutputFormatAndroidType,
-} from 'react-native-nitro-sound';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import {useTranslation} from 'react-i18next';
@@ -39,6 +33,12 @@ import {
 import {launchImageLibrary} from 'react-native-image-picker';
 import {ReportResult} from '../components/ReportResult';
 import {transcribeAudio} from '../services/audioTranscriptionService';
+import {
+  cleanupVoiceRecorder,
+  setupVoiceRecorder,
+  startVoiceRecording,
+  stopVoiceRecording,
+} from '../services/voiceRecorderService';
 import {analyzeReport} from '../services/reportService';
 import {getReports, saveReport} from '../services/reportStorage';
 import {buildReportReview} from '../services/reportReview';
@@ -64,20 +64,6 @@ const waveHeights = [
   {height: 19},
 ];
 
-const recorderSettings = {
-  AudioSourceAndroid: AudioSourceAndroidType.MIC,
-  OutputFormatAndroid: OutputFormatAndroidType.MPEG_4,
-  AudioEncoderAndroid: AudioEncoderAndroidType.AAC,
-  AudioQuality: 'high' as const,
-  AudioChannels: 1,
-  AudioSamplingRate: 16000,
-  AudioEncodingBitRate: 64000,
-  AVEncoderAudioQualityKeyIOS: AVEncoderAudioQualityIOSType.high,
-  AVNumberOfChannelsKeyIOS: 1,
-  AVSampleRateKeyIOS: 16000,
-  AVEncodingOptionIOS: 'aac' as const,
-};
-
 function formatRecordTime(milliseconds: number) {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
   const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
@@ -102,16 +88,13 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
   const [sites, setSites] = useState<FinanceSite[]>([]);
   const [selectedSiteId, setSelectedSiteId] = useState('');
   const [photos, setPhotos] = useState<ReportPhoto[]>([]);
+  const [voiceAvailable, setVoiceAvailable] = useState(true);
 
   useEffect(() => {
-    Sound.setSubscriptionDuration(0.12);
-    Sound.addRecordBackListener(meta => {
-      setRecordMs(meta.currentPosition ?? meta.recordSecs ?? 0);
-    });
+    setVoiceAvailable(setupVoiceRecorder(setRecordMs));
 
     return () => {
-      Sound.removeRecordBackListener();
-      Sound.stopRecorder().catch(() => undefined);
+      cleanupVoiceRecorder();
     };
   }, []);
 
@@ -184,7 +167,7 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
 
     if (listening) {
       try {
-        const audioUri = await Sound.stopRecorder();
+        const audioUri = await stopVoiceRecording();
         setListening(false);
         setLoading(true);
         const transcription = await transcribeAudio(audioUri, language);
@@ -210,7 +193,10 @@ export function NewReportScreen({currentUser}: {currentUser?: AppUser}) {
     setRecordMs(0);
     setListening(true);
     try {
-      await Sound.startRecorder(undefined, recorderSettings, true);
+      if (!voiceAvailable) {
+        throw new Error('Voice recorder unavailable.');
+      }
+      await startVoiceRecording();
     } catch {
       setListening(false);
       Alert.alert(t('report.voiceFailedTitle'), t('report.voiceFailedMessage'));
