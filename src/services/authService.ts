@@ -29,6 +29,22 @@ interface StoredUser extends AppUser {
   password: string;
 }
 
+export type AuthErrorCode =
+  | 'invalid-email'
+  | 'weak-password'
+  | 'missing-name'
+  | 'email-exists'
+  | 'invalid-credentials';
+
+export class AuthError extends Error {
+  code: AuthErrorCode;
+
+  constructor(code: AuthErrorCode) {
+    super(code);
+    this.code = code;
+  }
+}
+
 export const testAccounts: Array<StoredUser> = [
   {id: 'judge-owner', email: 'owner@siteops.ai', password: 'demo123', name: 'Owner Demo', role: 'owner', companyId: 'demo-company', companyName: 'SiteOps Demo', siteIds: 'all', createdAt: '2026-07-19T00:00:00.000Z'},
   {id: 'judge-manager', email: 'manager@siteops.ai', password: 'demo123', name: 'Manager Demo', role: 'manager', companyId: 'demo-company', companyName: 'SiteOps Demo', siteIds: 'all', createdAt: '2026-07-19T00:00:00.000Z'},
@@ -73,9 +89,12 @@ export async function getCurrentUser(): Promise<AppUser | null> {
 
 export async function loginUser(email: string, password: string): Promise<AppUser> {
   const cleanEmail = email.trim().toLowerCase();
+  if (!isValidEmail(cleanEmail)) {
+    throw new AuthError('invalid-email');
+  }
   const user = (await getStoredUsers()).find(item => item.email.toLowerCase() === cleanEmail && item.password === password);
   if (!user) {
-    throw new Error('Invalid credentials');
+    throw new AuthError('invalid-credentials');
   }
   const safeUser = publicUser(user);
   await AsyncStorage.setItem(AUTH_KEY, JSON.stringify(safeUser));
@@ -90,9 +109,18 @@ export async function registerUser(input: {
   companyName: string;
 }): Promise<AppUser> {
   const cleanEmail = input.email.trim().toLowerCase();
+  if (!isValidEmail(cleanEmail)) {
+    throw new AuthError('invalid-email');
+  }
+  if (input.password.length < 6) {
+    throw new AuthError('weak-password');
+  }
+  if (input.name.trim().length < 2) {
+    throw new AuthError('missing-name');
+  }
   const users = await getStoredUsers();
   if (users.some(user => user.email.toLowerCase() === cleanEmail)) {
-    throw new Error('Email already exists');
+    throw new AuthError('email-exists');
   }
   const user: StoredUser = {
     id: `user-${Date.now()}`,
@@ -122,4 +150,8 @@ export function can(user: AppUser | null | undefined, permission: Permission): b
 
 export function roleLabelKey(role: UserRole) {
   return `auth.roles.${role}`;
+}
+
+export function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim().toLowerCase());
 }
