@@ -4,12 +4,20 @@ import multer from 'multer';
 import OpenAI from 'openai';
 import {zodTextFormat} from 'openai/helpers/zod';
 import {toFile} from 'openai/uploads';
+import pg from 'pg';
 import {z} from 'zod';
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
-const syncedReports = new Map<string, unknown>();
-const registeredDevices = new Map<string, unknown>();
+const {Pool} = pg;
+const pool = process.env.DATABASE_URL
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+      max: 6,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
+    })
+  : null;
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {fileSize: 25 * 1024 * 1024, files: 1},
@@ -71,36 +79,164 @@ const reportSchema = z.object({
   }),
 });
 
-app.use(express.json({limit: '100kb'}));
+async function initializeDatabase() {
+  if (!pool) {
+    return;
+  }
 
-app.get('/health', (_request, response) => {
-  response.json({ok: true, model: process.env.OPENAI_MODEL ?? 'gpt-5.6-terra'});
+  await pool.query(`
+    create table if not exists reports (
+      id text primary key,
+      site text not null,
+      site_id text,
+      report_date text,
+      source text,
+      payload jsonb not null,
+      synced_at timestamptz not null default now(),
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    create index if not exists reports_site_idx on reports (site);
+    create index if not exists reports_site_id_idx on reports (site_id);
+    create index if not exists reports_synced_at_idx on reports (synced_at desc);
+
+    create table if not exists devices (
+      token text primary key,
+      platform text not null default 'unknown',
+      payload jsonb not null default '{}'::jsonb,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    create index if not exists devices_platform_idx on devices (platform);
+    create index if not exists devices_updated_at_idx on devices (updated_at desc);
+  `);
+}
+
+const databaseReady = initializeDatabase().catch(error => {
+  console.error('Database initialization failed.', error);
+  throw error;
 });
 
-app.post('/api/reports/sync', (request, response) => {
+async function ensureDatabaseReady() {
+  if (!pool) {
+    throw new Error('DATABASE_URL is not configured.');
+  }
+  await databaseReady;
+}
+
+async function getDatabaseStatus() {
+  if (!pool) {
+    return {configured: false, connected: false};
+  }
+
+  try {
+    await databaseReady;
+    const result = await pool.query<{now: string}>('select now()::text as now');
+    return {configured: true, connected: true, now: result.rows[0]?.now};
+  } catch (error) {
+    console.error('Database status check failed.', error);
+    return {configured: true, connected: false};
+  }
+}
+
+app.use(express.json({limit: '100kb'}));
+
+app.get('/health', async (_request, response) => {
+  const database = await getDatabaseStatus();
+  response.status(database.configured && !database.connected ? 503 : 200).json({
+    ok: database.configured ? database.connected : true,
+    model: process.env.OPENAI_MODEL ?? 'gpt-5.6-terra',
+    database,
+  });
+});
+
+app.get('/api/db/status', async (_request, response) => {
+  const database = await getDatabaseStatus();
+  response.status(database.configured && database.connected ? 200 : 503).json({ok: database.connected, database});
+});
+
+app.post('/api/reports/sync', async (request, response) => {
   const report = request.body;
   if (!report || typeof report.id !== 'string' || typeof report.site !== 'string') {
     response.status(400).json({error: 'A valid report payload is required.'});
     return;
   }
-  const syncedAt = new Date().toISOString();
-  syncedReports.set(report.id, {...report, syncedAt});
-  response.json({ok: true, id: report.id, syncedAt});
+
+  try {
+    await ensureDatabaseReady();
+    const syncedAt = new Date().toISOString();
+    const payload = {...report, syncedAt};
+    await pool!.query(
+      `
+        insert into reports (id, site, site_id, report_date, source, payload, synced_at, updated_at)
+        values ($1, $2, $3, $4, $5, $6::jsonb, $7, now())
+        on conflict (id) do update set
+          site = excluded.site,
+          site_id = excluded.site_id,
+          report_date = excluded.report_date,
+          source = excluded.source,
+          payload = excluded.payload,
+          synced_at = excluded.synced_at,
+          updated_at = now()
+      `,
+      [
+        report.id,
+        report.site,
+        typeof report.siteId === 'string' ? report.siteId : null,
+        typeof report.reportDate === 'string' ? report.reportDate : null,
+        typeof report.source === 'string' ? report.source : null,
+        JSON.stringify(payload),
+        syncedAt,
+      ],
+    );
+    response.json({ok: true, id: report.id, syncedAt});
+  } catch (error) {
+    console.error(error);
+    response.status(503).json({error: 'Database is not available.'});
+  }
 });
 
-app.get('/api/reports/sync', (_request, response) => {
-  response.json({ok: true, count: syncedReports.size, reports: [...syncedReports.values()]});
+app.get('/api/reports/sync', async (_request, response) => {
+  try {
+    await ensureDatabaseReady();
+    const result = await pool!.query<{payload: unknown; synced_at: string}>(
+      'select payload, synced_at::text from reports order by synced_at desc limit 200',
+    );
+    response.json({ok: true, count: result.rowCount, reports: result.rows.map(row => row.payload)});
+  } catch (error) {
+    console.error(error);
+    response.status(503).json({error: 'Database is not available.'});
+  }
 });
 
-app.post('/api/devices/register', (request, response) => {
+app.post('/api/devices/register', async (request, response) => {
   const token = typeof request.body?.token === 'string' ? request.body.token : '';
   const platform = typeof request.body?.platform === 'string' ? request.body.platform : 'unknown';
   if (!token) {
     response.status(400).json({error: 'Push token is required.'});
     return;
   }
-  registeredDevices.set(token, {token, platform, updatedAt: new Date().toISOString()});
-  response.json({ok: true});
+
+  try {
+    await ensureDatabaseReady();
+    await pool!.query(
+      `
+        insert into devices (token, platform, payload, updated_at)
+        values ($1, $2, $3::jsonb, now())
+        on conflict (token) do update set
+          platform = excluded.platform,
+          payload = excluded.payload,
+          updated_at = now()
+      `,
+      [token, platform, JSON.stringify(request.body ?? {})],
+    );
+    response.json({ok: true});
+  } catch (error) {
+    console.error(error);
+    response.status(503).json({error: 'Database is not available.'});
+  }
 });
 
 app.post('/api/translate/fields', async (request, response) => {
