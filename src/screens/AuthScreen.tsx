@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import {useTranslation} from 'react-i18next';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {
   Building2,
   CheckCircle2,
@@ -50,6 +51,7 @@ function authErrorKey(error: unknown) {
 
 export function AuthScreen({onAuthenticated}: {onAuthenticated: (user: AppUser) => void}) {
   const {t, i18n} = useTranslation();
+  const insets = useSafeAreaInsets();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -165,8 +167,14 @@ export function AuthScreen({onAuthenticated}: {onAuthenticated: (user: AppUser) 
   }
 
   return (
-    <KeyboardAvoidingView style={styles.safe} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+    <KeyboardAvoidingView
+      style={styles.safe}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}>
+      <ScrollView
+        contentContainerStyle={[styles.content, {paddingTop: Math.max(insets.top + 18, 54)}]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}>
         <View style={styles.languageRow}>
           {languages.map(language => (
             <Pressable
@@ -328,7 +336,7 @@ export function AuthScreen({onAuthenticated}: {onAuthenticated: (user: AppUser) 
 const styles = StyleSheet.create({
   safe: {flex: 1, backgroundColor: colors.background},
   content: {gap: 16, padding: 22, paddingBottom: 42},
-  languageRow: {alignSelf: 'center', flexDirection: 'row', gap: 8, paddingTop: 8},
+  languageRow: {alignSelf: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center'},
   languageChip: {alignItems: 'center', backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 12, borderWidth: 1, flexDirection: 'row', gap: 6, paddingHorizontal: 10, paddingVertical: 8},
   languageChipActive: {backgroundColor: colors.primarySoft, borderColor: colors.primary},
   languageText: {color: colors.muted, fontSize: 10, fontWeight: '900'},
