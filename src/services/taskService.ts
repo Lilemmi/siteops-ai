@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {StructuredReport} from '../types/report';
+import {MaterialItem, ReportTranslation, StructuredReport} from '../types/report';
 import {getLocalizedReport} from './contentLocalization';
 import {translateFields} from './translationService';
 
@@ -134,6 +134,35 @@ function reportBase(report: StructuredReport): Pick<
   };
 }
 
+function isNotSpecified(value: string) {
+  return ['not specified', 'не указано', 'לא צוין'].includes(value.trim().toLowerCase());
+}
+
+function materialTaskTitle(item: MaterialItem) {
+  const name = item.name.trim();
+  const quantity = item.quantity.trim();
+  return quantity && !isNotSpecified(quantity) ? `${name} ${quantity}` : name;
+}
+
+function reportTaskTranslations(
+  report: StructuredReport,
+  build: (localized: ReportTranslation) => Pick<TaskDraft, 'title' | 'description'>,
+): SiteTask['translations'] {
+  return (['en', 'ru', 'he'] as const).reduce<NonNullable<SiteTask['translations']>>((acc, locale) => {
+    const localized = getLocalizedReport(report, locale);
+    const fields = build(localized);
+    acc[locale] = {
+      title: fields.title,
+      description: fields.description,
+      site: localized.site,
+      location: report.floors[0] ? `Level ${report.floors[0]}` : 'Site',
+      due: 'Today',
+      assignee: '',
+    };
+    return acc;
+  }, {});
+}
+
 function buildReportTasks(reports: StructuredReport[], statuses: Record<string, TaskStatus>, language = 'en'): SiteTask[] {
   const tasks: SiteTask[] = [];
 
@@ -143,13 +172,20 @@ function buildReportTasks(reports: StructuredReport[], statuses: Record<string, 
       const id = `${report.id}-material-${index}`;
       tasks.push({
         id,
-        title: `${item.name} ${item.quantity}`.trim(),
+        title: materialTaskTitle(item),
         category: 'Material Missing',
         priority: 'HIGH',
         status: statuses[id] ?? 'Open',
         due: 'Today',
         description: localized.financialImpact || localized.summary,
         assignee: '',
+        translations: reportTaskTranslations(report, translated => {
+          const translatedItem = translated.missingMaterials[index] ?? item;
+          return {
+            title: materialTaskTitle(translatedItem),
+            description: translated.financialImpact || translated.summary,
+          };
+        }),
         ...reportBase(report),
       });
     });
@@ -165,6 +201,13 @@ function buildReportTasks(reports: StructuredReport[], statuses: Record<string, 
         due: 'Tomorrow',
         description: item.impact || localized.summary,
         assignee: '',
+        translations: reportTaskTranslations(report, translated => {
+          const translatedItem = translated.delays[index] ?? item;
+          return {
+            title: translatedItem.reason,
+            description: translatedItem.impact || translated.summary,
+          };
+        }),
         ...reportBase(report),
       });
     });
@@ -180,6 +223,10 @@ function buildReportTasks(reports: StructuredReport[], statuses: Record<string, 
         due: 'Tomorrow',
         description: localized.summary,
         assignee: '',
+        translations: reportTaskTranslations(report, translated => ({
+          title: translated.nextDayTasks[index] ?? title,
+          description: translated.summary,
+        })),
         ...reportBase(report),
       });
     });

@@ -62,7 +62,7 @@ SiteOps AI is a native Android/iOS React Native app with a Railway backend. A us
 - Dashboard with metrics, progress, activity, checklist, photos, and team chat demo state.
 - Sites / finance overview with payments and cost breakdown.
 - Tasks & alerts generated from reports and manual tasks.
-- PDF/CSV-style export utilities for reports and finance flows.
+- CSV-style and local backup export utilities for reports and finance flows.
 - Local JSON backup export.
 - Offline demo fallback if the AI endpoint is unavailable.
 
