@@ -1,5 +1,5 @@
 import {Platform} from 'react-native';
-import {API_BASE_URL} from '../config';
+import {apiFetch} from './apiClient';
 import {InputLanguage} from '../types/report';
 
 export interface AudioTranscriptionResult {
@@ -26,7 +26,7 @@ export async function transcribeAudio(uri: string, language: InputLanguage): Pro
   form.append('audio', normalizeAudioFile(uri) as unknown as Blob);
   form.append('language', language);
 
-  const response = await fetch(`${API_BASE_URL}/api/audio/transcribe`, {
+  const response = await apiFetch('/api/audio/transcribe', {
     method: 'POST',
     body: form,
   });

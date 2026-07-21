@@ -34,6 +34,23 @@ jest.mock('@react-native-async-storage/async-storage', () => {
   };
 });
 
+jest.mock('react-native-keychain', () => {
+  let password = null;
+  return {
+    ACCESSIBLE: {WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'AccessibleWhenUnlockedThisDeviceOnly'},
+    SECURITY_LEVEL: {SECURE_SOFTWARE: 'SECURE_SOFTWARE', SECURE_HARDWARE: 'SECURE_HARDWARE'},
+    getGenericPassword: jest.fn(async () => (password ? {username: 'session', password, service: 'com.siteopsai.auth'} : false)),
+    setGenericPassword: jest.fn(async (_username, nextPassword) => {
+      password = nextPassword;
+      return true;
+    }),
+    resetGenericPassword: jest.fn(async () => {
+      password = null;
+      return true;
+    }),
+  };
+});
+
 jest.mock('react-native-fs', () => ({
   DocumentDirectoryPath: '/tmp',
   writeFile: jest.fn(() => Promise.resolve()),

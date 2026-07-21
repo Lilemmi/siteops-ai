@@ -1,7 +1,6 @@
 import React, {useMemo, useState} from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -28,7 +27,9 @@ import {
   AppUser,
   AuthError,
   isValidEmail,
+  loginDemoUser,
   loginUser,
+  minPasswordLength,
   registerUser,
   roleLabelKey,
   testAccounts,
@@ -50,11 +51,11 @@ function authErrorKey(error: unknown) {
 export function AuthScreen({onAuthenticated}: {onAuthenticated: (user: AppUser) => void}) {
   const {t, i18n} = useTranslation();
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [email, setEmail] = useState('owner@siteops.ai');
-  const [password, setPassword] = useState('demo123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [name, setName] = useState('Alex');
-  const [companyName, setCompanyName] = useState('SiteOps Demo');
+  const [name, setName] = useState('');
+  const [companyName, setCompanyName] = useState('');
   const [role, setRole] = useState<UserRole>('owner');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -62,20 +63,25 @@ export function AuthScreen({onAuthenticated}: {onAuthenticated: (user: AppUser) 
 
   const passwordScore = useMemo(() => {
     let score = 0;
-    if (password.length >= 6) score += 1;
+    if (password.length >= minPasswordLength()) score += 1;
     if (/[A-ZА-Я]/.test(password) || /\d/.test(password)) score += 1;
-    if (password.length >= 10 || /[^a-zA-Zа-яА-Я0-9]/.test(password)) score += 1;
+    if (password.length >= 12 || /[^a-zA-Zа-яА-Я0-9]/.test(password)) score += 1;
     return score;
   }, [password]);
 
   const canSubmit = useMemo(() => {
-    if (!isValidEmail(email) || password.length < 6) {
+    if (!isValidEmail(email)) {
       return false;
     }
     if (mode === 'register') {
-      return name.trim().length >= 2 && companyName.trim().length >= 2 && password === confirmPassword;
+      return (
+        password.length >= minPasswordLength() &&
+        name.trim().length >= 2 &&
+        companyName.trim().length >= 2 &&
+        password === confirmPassword
+      );
     }
-    return true;
+    return password.length > 0;
   }, [companyName, confirmPassword, email, mode, name, password]);
 
   function resetError() {
@@ -90,8 +96,12 @@ export function AuthScreen({onAuthenticated}: {onAuthenticated: (user: AppUser) 
       setFormError(t('auth.errors.invalid-email'));
       return;
     }
-    if (password.length < 6) {
+    if (mode === 'register' && password.length < minPasswordLength()) {
       setFormError(t('auth.errors.weak-password'));
+      return;
+    }
+    if (mode === 'login' && password.length < 1) {
+      setFormError(t('auth.errors.invalid-credentials'));
       return;
     }
     if (mode === 'register') {
@@ -125,14 +135,14 @@ export function AuthScreen({onAuthenticated}: {onAuthenticated: (user: AppUser) 
   async function enterDemo(account: typeof testAccounts[number]) {
     setMode('login');
     setEmail(account.email);
-    setPassword(account.password);
+    setPassword('');
     setFormError('');
     setLoading(true);
     try {
-      const user = await loginUser(account.email, account.password);
+      const user = await loginDemoUser(account.role);
       onAuthenticated(user);
-    } catch {
-      Alert.alert(t('auth.failedTitle'), t('auth.failedLogin'));
+    } catch (error) {
+      setFormError(t(authErrorKey(error)));
     } finally {
       setLoading(false);
     }
@@ -145,13 +155,12 @@ export function AuthScreen({onAuthenticated}: {onAuthenticated: (user: AppUser) 
   function switchMode(nextMode: 'login' | 'register') {
     setMode(nextMode);
     setFormError('');
+    setPassword('');
+    setConfirmPassword('');
     if (nextMode === 'register') {
-      setPassword('');
-      setConfirmPassword('');
       setEmail('');
-    } else {
-      setEmail('owner@siteops.ai');
-      setPassword('demo123');
+      setName('');
+      setCompanyName('');
     }
   }
 
@@ -247,14 +256,14 @@ export function AuthScreen({onAuthenticated}: {onAuthenticated: (user: AppUser) 
           />
 
           <Text style={styles.label}>{t('auth.password')}</Text>
-          <View style={[styles.passwordWrap, password && password.length < 6 && styles.inputError]}>
+          <View style={[styles.passwordWrap, mode === 'register' && password && password.length < minPasswordLength() && styles.inputError]}>
             <TextInput
               value={password}
               onChangeText={value => {setPassword(value); resetError();}}
               secureTextEntry={!showPassword}
               autoCapitalize="none"
               autoCorrect={false}
-              placeholder={mode === 'login' ? 'demo123' : t('auth.passwordPlaceholder')}
+              placeholder={t('auth.passwordPlaceholder')}
               placeholderTextColor={colors.faint}
               style={styles.passwordInput}
             />

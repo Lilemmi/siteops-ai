@@ -1,8 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNFS from 'react-native-fs';
 import Share from 'react-native-share';
-import {API_BASE_URL} from '../config';
 import i18n from '../i18n';
+import {apiFetch} from './apiClient';
 import {FinanceState, getFinanceState} from './financeService';
 import {getReports, saveReport} from './reportStorage';
 import {StructuredReport} from '../types/report';
@@ -60,9 +60,8 @@ export async function syncPendingReports(): Promise<{synced: number; failed: num
 
   for (const item of queue) {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/reports/sync`, {
+      const response = await apiFetch('/api/reports/sync', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(item.payload),
       });
       if (!response.ok) {

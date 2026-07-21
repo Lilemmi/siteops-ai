@@ -1,4 +1,4 @@
-import {API_BASE_URL} from '../config';
+import {apiFetch} from './apiClient';
 import {InputLanguage, ReportTranslation, StructuredReport} from '../types/report';
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -8,9 +8,8 @@ export async function analyzeReport(
   language: InputLanguage,
 ): Promise<StructuredReport> {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/reports/analyze`, {
+    const response = await apiFetch('/api/reports/analyze', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({text, language, date: today()}),
     });
 

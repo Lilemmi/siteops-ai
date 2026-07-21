@@ -1,8 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {API_BASE_URL} from '../config';
+import {apiFetch, clearAuthToken, setAuthToken} from './apiClient';
 
 const AUTH_KEY = '@siteops/auth/v1';
-const AUTH_TOKEN_KEY = '@siteops/auth-token/v1';
+const MIN_PASSWORD_LENGTH = 8;
 
 export type UserRole = 'owner' | 'manager' | 'foreman' | 'accountant' | 'worker';
 
@@ -26,9 +26,11 @@ export interface AppUser {
   createdAt: string;
 }
 
-export interface StoredUser extends AppUser {
-  password: string;
-}
+export type DemoAccount = {
+  email: string;
+  name: string;
+  role: UserRole;
+};
 
 export type AuthErrorCode =
   | 'invalid-email'
@@ -38,7 +40,8 @@ export type AuthErrorCode =
   | 'password-mismatch'
   | 'email-exists'
   | 'network'
-  | 'invalid-credentials';
+  | 'invalid-credentials'
+  | 'demo-disabled';
 
 export class AuthError extends Error {
   code: AuthErrorCode;
@@ -49,12 +52,13 @@ export class AuthError extends Error {
   }
 }
 
-export const testAccounts: Array<StoredUser> = [
-  {id: 'judge-owner', email: 'owner@siteops.ai', password: 'demo123', name: 'Owner Demo', role: 'owner', companyId: 'demo-company', companyName: 'SiteOps Demo', siteIds: 'all', createdAt: '2026-07-19T00:00:00.000Z'},
-  {id: 'judge-manager', email: 'manager@siteops.ai', password: 'demo123', name: 'Manager Demo', role: 'manager', companyId: 'demo-company', companyName: 'SiteOps Demo', siteIds: 'all', createdAt: '2026-07-19T00:00:00.000Z'},
-  {id: 'judge-foreman', email: 'foreman@siteops.ai', password: 'demo123', name: 'Foreman Demo', role: 'foreman', companyId: 'demo-company', companyName: 'SiteOps Demo', siteIds: 'all', createdAt: '2026-07-19T00:00:00.000Z'},
-  {id: 'judge-accountant', email: 'accountant@siteops.ai', password: 'demo123', name: 'Accountant Demo', role: 'accountant', companyId: 'demo-company', companyName: 'SiteOps Demo', siteIds: 'all', createdAt: '2026-07-19T00:00:00.000Z'},
-  {id: 'judge-worker', email: 'worker@siteops.ai', password: 'demo123', name: 'Worker Demo', role: 'worker', companyId: 'demo-company', companyName: 'SiteOps Demo', siteIds: 'all', createdAt: '2026-07-19T00:00:00.000Z'},
+/** Public demo account labels — passwords are NOT shipped in the app binary. */
+export const testAccounts: DemoAccount[] = [
+  {email: 'owner@siteops.ai', name: 'Owner Demo', role: 'owner'},
+  {email: 'manager@siteops.ai', name: 'Manager Demo', role: 'manager'},
+  {email: 'foreman@siteops.ai', name: 'Foreman Demo', role: 'foreman'},
+  {email: 'accountant@siteops.ai', name: 'Accountant Demo', role: 'accountant'},
+  {email: 'worker@siteops.ai', name: 'Worker Demo', role: 'worker'},
 ];
 
 const permissions: Record<UserRole, Permission[]> = {
@@ -72,24 +76,10 @@ export async function getCurrentUser(): Promise<AppUser | null> {
 
 async function saveSession(user: AppUser, token: string) {
   await AsyncStorage.setItem(AUTH_KEY, JSON.stringify(user));
-  await AsyncStorage.setItem(AUTH_TOKEN_KEY, token);
+  await setAuthToken(token);
 }
 
-async function requestAuth(
-  path: '/api/auth/login' | '/api/auth/register',
-  payload: Record<string, string>,
-): Promise<AppUser> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      method: 'POST',
-      headers: {'content-type': 'application/json'},
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    throw new AuthError('network');
-  }
-
+async function parseAuthResponse(response: Response): Promise<AppUser> {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const code = typeof data.error === 'string' ? data.error : '';
@@ -98,6 +88,9 @@ async function requestAuth(
     }
     if (code === 'invalid-email' || code === 'invalid-input') {
       throw new AuthError('invalid-email');
+    }
+    if (code === 'demo-disabled') {
+      throw new AuthError('demo-disabled');
     }
     if (response.status === 401) {
       throw new AuthError('invalid-credentials');
@@ -113,12 +106,33 @@ async function requestAuth(
   return data.user as AppUser;
 }
 
+async function requestAuth(
+  path: '/api/auth/login' | '/api/auth/register' | '/api/auth/demo',
+  payload: Record<string, string>,
+): Promise<AppUser> {
+  let response: Response;
+  try {
+    response = await apiFetch(path, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new AuthError('network');
+  }
+
+  return parseAuthResponse(response);
+}
+
 export async function loginUser(email: string, password: string): Promise<AppUser> {
   const cleanEmail = email.trim().toLowerCase();
   if (!isValidEmail(cleanEmail)) {
     throw new AuthError('invalid-email');
   }
   return requestAuth('/api/auth/login', {email: cleanEmail, password});
+}
+
+export async function loginDemoUser(role: UserRole): Promise<AppUser> {
+  return requestAuth('/api/auth/demo', {role});
 }
 
 export async function registerUser(input: {
@@ -132,7 +146,7 @@ export async function registerUser(input: {
   if (!isValidEmail(cleanEmail)) {
     throw new AuthError('invalid-email');
   }
-  if (input.password.length < 6) {
+  if (input.password.length < MIN_PASSWORD_LENGTH) {
     throw new AuthError('weak-password');
   }
   if (input.name.trim().length < 2) {
@@ -151,8 +165,13 @@ export async function registerUser(input: {
 }
 
 export async function logoutUser(): Promise<void> {
+  try {
+    await apiFetch('/api/auth/logout', {method: 'POST'});
+  } catch {
+    // Local logout must succeed even if the network call fails.
+  }
   await AsyncStorage.removeItem(AUTH_KEY);
-  await AsyncStorage.removeItem(AUTH_TOKEN_KEY);
+  await clearAuthToken();
 }
 
 export function can(user: AppUser | null | undefined, permission: Permission): boolean {
@@ -165,4 +184,8 @@ export function roleLabelKey(role: UserRole) {
 
 export function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim().toLowerCase());
+}
+
+export function minPasswordLength() {
+  return MIN_PASSWORD_LENGTH;
 }

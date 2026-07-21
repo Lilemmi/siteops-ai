@@ -1,7 +1,15 @@
 import 'dotenv/config';
-import {randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual} from 'node:crypto';
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  scrypt as scryptCallback,
+  timingSafeEqual,
+} from 'node:crypto';
 import {promisify} from 'node:util';
-import express from 'express';
+import express, {NextFunction, Request, Response} from 'express';
+import rateLimit from 'express-rate-limit';
+import helmet from 'helmet';
 import multer from 'multer';
 import OpenAI from 'openai';
 import {zodTextFormat} from 'openai/helpers/zod';
@@ -14,6 +22,10 @@ const port = Number(process.env.PORT ?? 8787);
 const {Pool} = pg;
 const scrypt = promisify(scryptCallback);
 const sessionTtlDays = Number(process.env.SESSION_TTL_DAYS ?? 30);
+const enableDemoAccounts = (process.env.ENABLE_DEMO_ACCOUNTS ?? 'true').toLowerCase() !== 'false';
+const demoPassword = process.env.DEMO_ACCOUNT_PASSWORD ?? 'demo123';
+const isProduction = process.env.NODE_ENV === 'production';
+
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
@@ -22,9 +34,27 @@ const pool = process.env.DATABASE_URL
       connectionTimeoutMillis: 10_000,
     })
   : null;
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {fileSize: 25 * 1024 * 1024, files: 1},
+  fileFilter(_request, file, callback) {
+    const allowed = new Set([
+      'audio/mp4',
+      'audio/m4a',
+      'audio/x-m4a',
+      'audio/mpeg',
+      'audio/wav',
+      'audio/x-wav',
+      'audio/webm',
+      'application/octet-stream',
+    ]);
+    if (!allowed.has(file.mimetype)) {
+      callback(new Error('Unsupported audio type.'));
+      return;
+    }
+    callback(null, true);
+  },
 });
 
 const workItemSchema = z.object({
@@ -39,7 +69,7 @@ const roleSchema = z.enum(['owner', 'manager', 'foreman', 'accountant', 'worker'
 
 const authRegisterSchema = z.object({
   email: z.string().email().max(320),
-  password: z.string().min(6).max(200),
+  password: z.string().min(8).max(200),
   name: z.string().trim().min(2).max(120),
   role: roleSchema,
   companyName: z.string().trim().min(2).max(160),
@@ -48,6 +78,10 @@ const authRegisterSchema = z.object({
 const authLoginSchema = z.object({
   email: z.string().email().max(320),
   password: z.string().min(1).max(200),
+});
+
+const authDemoSchema = z.object({
+  role: roleSchema,
 });
 
 const reportTranslationSchema = z.object({
@@ -98,11 +132,11 @@ const reportSchema = z.object({
 });
 
 const judgeAccounts = [
-  {id: 'judge-owner', email: 'owner@siteops.ai', password: 'demo123', name: 'Owner Demo', role: 'owner', companyId: 'demo-company', companyName: 'SiteOps Demo'},
-  {id: 'judge-manager', email: 'manager@siteops.ai', password: 'demo123', name: 'Manager Demo', role: 'manager', companyId: 'demo-company', companyName: 'SiteOps Demo'},
-  {id: 'judge-foreman', email: 'foreman@siteops.ai', password: 'demo123', name: 'Foreman Demo', role: 'foreman', companyId: 'demo-company', companyName: 'SiteOps Demo'},
-  {id: 'judge-accountant', email: 'accountant@siteops.ai', password: 'demo123', name: 'Accountant Demo', role: 'accountant', companyId: 'demo-company', companyName: 'SiteOps Demo'},
-  {id: 'judge-worker', email: 'worker@siteops.ai', password: 'demo123', name: 'Worker Demo', role: 'worker', companyId: 'demo-company', companyName: 'SiteOps Demo'},
+  {id: 'judge-owner', email: 'owner@siteops.ai', name: 'Owner Demo', role: 'owner' as const, companyId: 'demo-company', companyName: 'SiteOps Demo'},
+  {id: 'judge-manager', email: 'manager@siteops.ai', name: 'Manager Demo', role: 'manager' as const, companyId: 'demo-company', companyName: 'SiteOps Demo'},
+  {id: 'judge-foreman', email: 'foreman@siteops.ai', name: 'Foreman Demo', role: 'foreman' as const, companyId: 'demo-company', companyName: 'SiteOps Demo'},
+  {id: 'judge-accountant', email: 'accountant@siteops.ai', name: 'Accountant Demo', role: 'accountant' as const, companyId: 'demo-company', companyName: 'SiteOps Demo'},
+  {id: 'judge-worker', email: 'worker@siteops.ai', name: 'Worker Demo', role: 'worker' as const, companyId: 'demo-company', companyName: 'SiteOps Demo'},
 ] as const;
 
 type UserRow = {
@@ -116,6 +150,16 @@ type UserRow = {
   site_ids: unknown;
   created_at: string;
 };
+
+type AuthenticatedRequest = Request & {user?: ReturnType<typeof publicUser>; authToken?: string};
+
+function hashToken(token: string) {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function sanitizeFileName(name: string) {
+  return name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'siteops-voice-report.m4a';
+}
 
 async function hashPassword(password: string) {
   const salt = randomBytes(16).toString('hex');
@@ -146,12 +190,20 @@ function publicUser(row: UserRow) {
   };
 }
 
+function extractBearerToken(request: Request) {
+  const authorization = request.header('authorization') ?? '';
+  if (!authorization.startsWith('Bearer ')) {
+    return '';
+  }
+  return authorization.slice(7).trim();
+}
+
 async function createSession(userId: string) {
   await ensureDatabaseReady();
   const token = randomBytes(32).toString('base64url');
   await pool!.query(
     `insert into auth_sessions (token, user_id, expires_at) values ($1, $2, now() + ($3::text || ' days')::interval)`,
-    [token, userId, sessionTtlDays],
+    [hashToken(token), userId, sessionTtlDays],
   );
   return token;
 }
@@ -167,9 +219,31 @@ async function getUserByToken(token: string) {
       where auth_sessions.token = $1 and auth_sessions.expires_at > now()
       limit 1
     `,
-    [token],
+    [hashToken(token)],
   );
   return result.rows[0] ?? null;
+}
+
+async function requireAuth(request: AuthenticatedRequest, response: Response, next: NextFunction) {
+  const token = extractBearerToken(request);
+  if (!token) {
+    response.status(401).json({error: 'missing-token'});
+    return;
+  }
+
+  try {
+    const user = await getUserByToken(token);
+    if (!user) {
+      response.status(401).json({error: 'invalid-session'});
+      return;
+    }
+    request.user = publicUser(user);
+    request.authToken = token;
+    next();
+  } catch (error) {
+    console.error(error);
+    response.status(503).json({error: 'Database is not available.'});
+  }
 }
 
 async function initializeDatabase() {
@@ -185,22 +259,33 @@ async function initializeDatabase() {
       report_date text,
       source text,
       payload jsonb not null,
+      company_id text,
+      user_id text,
       synced_at timestamptz not null default now(),
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now()
     );
 
+    alter table reports add column if not exists company_id text;
+    alter table reports add column if not exists user_id text;
+
     create index if not exists reports_site_idx on reports (site);
     create index if not exists reports_site_id_idx on reports (site_id);
     create index if not exists reports_synced_at_idx on reports (synced_at desc);
+    create index if not exists reports_company_id_idx on reports (company_id);
 
     create table if not exists devices (
       token text primary key,
       platform text not null default 'unknown',
       payload jsonb not null default '{}'::jsonb,
+      user_id text,
+      company_id text,
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now()
     );
+
+    alter table devices add column if not exists user_id text;
+    alter table devices add column if not exists company_id text;
 
     create index if not exists devices_platform_idx on devices (platform);
     create index if not exists devices_updated_at_idx on devices (updated_at desc);
@@ -232,23 +317,35 @@ async function initializeDatabase() {
     create index if not exists auth_sessions_expires_at_idx on auth_sessions (expires_at);
   `);
 
-  for (const account of judgeAccounts) {
-    await pool.query(
-      `
-        insert into users (id, email, password_hash, name, role, company_id, company_name, site_ids)
-        values ($1, $2, $3, $4, $5, $6, $7, '"all"'::jsonb)
-        on conflict (email) do nothing
-      `,
-      [
-        account.id,
-        account.email,
-        await hashPassword(account.password),
-        account.name,
-        account.role,
-        account.companyId,
-        account.companyName,
-      ],
-    );
+  // Drop expired sessions on boot; keep table lean.
+  await pool.query(`delete from auth_sessions where expires_at <= now()`);
+
+  if (enableDemoAccounts) {
+    const passwordHash = await hashPassword(demoPassword);
+    for (const account of judgeAccounts) {
+      await pool.query(
+        `
+          insert into users (id, email, password_hash, name, role, company_id, company_name, site_ids)
+          values ($1, $2, $3, $4, $5, $6, $7, '"all"'::jsonb)
+          on conflict (email) do update set
+            password_hash = excluded.password_hash,
+            name = excluded.name,
+            role = excluded.role,
+            company_id = excluded.company_id,
+            company_name = excluded.company_name,
+            updated_at = now()
+        `,
+        [
+          account.id,
+          account.email,
+          passwordHash,
+          account.name,
+          account.role,
+          account.companyId,
+          account.companyName,
+        ],
+      );
+    }
   }
 }
 
@@ -279,23 +376,57 @@ async function getDatabaseStatus() {
   }
 }
 
+// Railway / reverse-proxy: trust one hop so rate limiting sees real client IPs.
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+}));
 app.use(express.json({limit: '100kb'}));
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {error: 'Too many auth attempts. Try again later.'},
+});
+
+const aiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {error: 'Too many AI requests. Try again later.'},
+});
+
+const syncLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {error: 'Too many sync requests. Try again later.'},
+});
 
 app.get('/health', async (_request, response) => {
   const database = await getDatabaseStatus();
   response.status(database.configured && !database.connected ? 503 : 200).json({
     ok: database.configured ? database.connected : true,
-    model: process.env.OPENAI_MODEL ?? 'gpt-5.6-terra',
-    database,
+    database: {
+      configured: database.configured,
+      connected: database.connected,
+    },
+    demoAccounts: enableDemoAccounts,
   });
 });
 
-app.get('/api/db/status', async (_request, response) => {
+app.get('/api/db/status', requireAuth, async (_request, response) => {
   const database = await getDatabaseStatus();
   response.status(database.configured && database.connected ? 200 : 503).json({ok: database.connected, database});
 });
 
-app.post('/api/auth/register', async (request, response) => {
+app.post('/api/auth/register', authLimiter, async (request, response) => {
   const parsed = authRegisterSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({error: 'invalid-input'});
@@ -307,6 +438,7 @@ app.post('/api/auth/register', async (request, response) => {
     const userId = randomUUID();
     const companyId = `company-${randomUUID()}`;
     const passwordHash = await hashPassword(parsed.data.password);
+    // New company registration: the creator may choose their role within their own company.
     const result = await pool!.query<UserRow>(
       `
         insert into users (id, email, password_hash, name, role, company_id, company_name, site_ids)
@@ -335,7 +467,7 @@ app.post('/api/auth/register', async (request, response) => {
   }
 });
 
-app.post('/api/auth/login', async (request, response) => {
+app.post('/api/auth/login', authLimiter, async (request, response) => {
   const parsed = authLoginSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({error: 'invalid-email'});
@@ -366,58 +498,115 @@ app.post('/api/auth/login', async (request, response) => {
   }
 });
 
-app.get('/api/auth/me', async (request, response) => {
-  const authorization = request.header('authorization') ?? '';
-  const token = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
-  if (!token) {
-    response.status(401).json({error: 'missing-token'});
+app.post('/api/auth/demo', authLimiter, async (request, response) => {
+  if (!enableDemoAccounts) {
+    response.status(404).json({error: 'demo-disabled'});
+    return;
+  }
+
+  const parsed = authDemoSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({error: 'invalid-input'});
     return;
   }
 
   try {
-    const user = await getUserByToken(token);
-    if (!user) {
-      response.status(401).json({error: 'invalid-session'});
+    await ensureDatabaseReady();
+    const account = judgeAccounts.find(item => item.role === parsed.data.role);
+    if (!account) {
+      response.status(404).json({error: 'demo-not-found'});
       return;
     }
-    response.json({ok: true, user: publicUser(user)});
+    const result = await pool!.query<UserRow>(
+      `
+        select id, email, password_hash, name, role, company_id, company_name, site_ids, created_at::text
+        from users
+        where id = $1
+        limit 1
+      `,
+      [account.id],
+    );
+    const user = result.rows[0];
+    if (!user) {
+      response.status(404).json({error: 'demo-not-found'});
+      return;
+    }
+    const token = await createSession(user.id);
+    response.json({ok: true, token, user: publicUser(user)});
   } catch (error) {
     console.error(error);
     response.status(503).json({error: 'Database is not available.'});
   }
 });
 
-app.post('/api/reports/sync', async (request, response) => {
+app.post('/api/auth/logout', requireAuth, async (request: AuthenticatedRequest, response) => {
+  try {
+    await ensureDatabaseReady();
+    if (request.authToken) {
+      await pool!.query('delete from auth_sessions where token = $1', [hashToken(request.authToken)]);
+    }
+    response.json({ok: true});
+  } catch (error) {
+    console.error(error);
+    response.status(503).json({error: 'Database is not available.'});
+  }
+});
+
+app.get('/api/auth/me', requireAuth, async (request: AuthenticatedRequest, response) => {
+  response.json({ok: true, user: request.user});
+});
+
+app.post('/api/reports/sync', syncLimiter, requireAuth, async (request: AuthenticatedRequest, response) => {
   const report = request.body;
   if (!report || typeof report.id !== 'string' || typeof report.site !== 'string') {
+    response.status(400).json({error: 'A valid report payload is required.'});
+    return;
+  }
+  if (report.id.length > 120 || report.site.length > 200) {
     response.status(400).json({error: 'A valid report payload is required.'});
     return;
   }
 
   try {
     await ensureDatabaseReady();
+    const user = request.user!;
+    const existing = await pool!.query<{company_id: string | null}>(
+      'select company_id from reports where id = $1 limit 1',
+      [report.id],
+    );
+    const existingCompanyId = existing.rows[0]?.company_id;
+    if (existingCompanyId && existingCompanyId !== user.companyId) {
+      response.status(403).json({error: 'forbidden'});
+      return;
+    }
+
     const syncedAt = new Date().toISOString();
-    const payload = {...report, syncedAt};
+    const payload = {...report, syncedAt, companyId: user.companyId, userId: user.id};
     await pool!.query(
       `
-        insert into reports (id, site, site_id, report_date, source, payload, synced_at, updated_at)
-        values ($1, $2, $3, $4, $5, $6::jsonb, $7, now())
+        insert into reports (id, site, site_id, report_date, source, payload, company_id, user_id, synced_at, updated_at)
+        values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, now())
         on conflict (id) do update set
           site = excluded.site,
           site_id = excluded.site_id,
           report_date = excluded.report_date,
           source = excluded.source,
           payload = excluded.payload,
+          company_id = excluded.company_id,
+          user_id = excluded.user_id,
           synced_at = excluded.synced_at,
           updated_at = now()
+        where reports.company_id is null or reports.company_id = excluded.company_id
       `,
       [
         report.id,
         report.site,
-        typeof report.siteId === 'string' ? report.siteId : null,
-        typeof report.reportDate === 'string' ? report.reportDate : null,
-        typeof report.source === 'string' ? report.source : null,
+        typeof report.siteId === 'string' ? report.siteId.slice(0, 120) : null,
+        typeof report.reportDate === 'string' ? report.reportDate.slice(0, 40) : null,
+        typeof report.source === 'string' ? report.source.slice(0, 40) : null,
         JSON.stringify(payload),
+        user.companyId,
+        user.id,
         syncedAt,
       ],
     );
@@ -428,11 +617,19 @@ app.post('/api/reports/sync', async (request, response) => {
   }
 });
 
-app.get('/api/reports/sync', async (_request, response) => {
+app.get('/api/reports/sync', syncLimiter, requireAuth, async (request: AuthenticatedRequest, response) => {
   try {
     await ensureDatabaseReady();
+    const companyId = request.user!.companyId;
     const result = await pool!.query<{payload: unknown; synced_at: string}>(
-      'select payload, synced_at::text from reports order by synced_at desc limit 200',
+      `
+        select payload, synced_at::text
+        from reports
+        where company_id = $1
+        order by synced_at desc
+        limit 200
+      `,
+      [companyId],
     );
     response.json({ok: true, count: result.rowCount, reports: result.rows.map(row => row.payload)});
   } catch (error) {
@@ -441,26 +638,29 @@ app.get('/api/reports/sync', async (_request, response) => {
   }
 });
 
-app.post('/api/devices/register', async (request, response) => {
-  const token = typeof request.body?.token === 'string' ? request.body.token : '';
-  const platform = typeof request.body?.platform === 'string' ? request.body.platform : 'unknown';
-  if (!token) {
+app.post('/api/devices/register', syncLimiter, requireAuth, async (request: AuthenticatedRequest, response) => {
+  const token = typeof request.body?.token === 'string' ? request.body.token.trim() : '';
+  const platform = typeof request.body?.platform === 'string' ? request.body.platform.trim().slice(0, 40) : 'unknown';
+  if (!token || token.length > 512) {
     response.status(400).json({error: 'Push token is required.'});
     return;
   }
 
   try {
     await ensureDatabaseReady();
+    const user = request.user!;
     await pool!.query(
       `
-        insert into devices (token, platform, payload, updated_at)
-        values ($1, $2, $3::jsonb, now())
+        insert into devices (token, platform, payload, user_id, company_id, updated_at)
+        values ($1, $2, $3::jsonb, $4, $5, now())
         on conflict (token) do update set
           platform = excluded.platform,
           payload = excluded.payload,
+          user_id = excluded.user_id,
+          company_id = excluded.company_id,
           updated_at = now()
       `,
-      [token, platform, JSON.stringify(request.body ?? {})],
+      [token, platform, JSON.stringify({platform}), user.id, user.companyId],
     );
     response.json({ok: true});
   } catch (error) {
@@ -469,15 +669,16 @@ app.post('/api/devices/register', async (request, response) => {
   }
 });
 
-app.post('/api/translate/fields', async (request, response) => {
+app.post('/api/translate/fields', aiLimiter, requireAuth, async (request, response) => {
   const fields = request.body?.fields && typeof request.body.fields === 'object'
     ? request.body.fields as Record<string, unknown>
     : {};
   const cleanFields = Object.fromEntries(
     Object.entries(fields)
       .filter(([, value]) => typeof value === 'string')
-      .map(([key, value]) => [key, String(value).trim()])
-      .filter(([key, value]) => key.length > 0 && value.length > 0 && value.length <= 2000),
+      .map(([key, value]) => [key.slice(0, 80), String(value).trim()])
+      .filter(([key, value]) => key.length > 0 && value.length > 0 && value.length <= 2000)
+      .slice(0, 40),
   );
 
   if (!Object.keys(cleanFields).length) {
@@ -520,7 +721,15 @@ app.post('/api/translate/fields', async (request, response) => {
   }
 });
 
-app.post('/api/audio/transcribe', upload.single('audio'), async (request, response) => {
+app.post('/api/audio/transcribe', aiLimiter, requireAuth, (request, response, next) => {
+  upload.single('audio')(request, response, error => {
+    if (error) {
+      response.status(400).json({error: error instanceof Error ? error.message : 'Invalid audio upload.'});
+      return;
+    }
+    next();
+  });
+}, async (request, response) => {
   const languageHint = typeof request.body?.language === 'string' ? request.body.language : 'auto';
   const language = languageHint === 'ru' || languageHint === 'he' || languageHint === 'en'
     ? languageHint
@@ -539,7 +748,7 @@ app.post('/api/audio/transcribe', upload.single('audio'), async (request, respon
     const client = new OpenAI({apiKey: process.env.OPENAI_API_KEY});
     const file = await toFile(
       request.file.buffer,
-      request.file.originalname || 'siteops-voice-report.m4a',
+      sanitizeFileName(request.file.originalname || 'siteops-voice-report.m4a'),
       {type: request.file.mimetype || 'audio/mp4'},
     );
     const transcription = await client.audio.transcriptions.create({
@@ -568,7 +777,7 @@ app.post('/api/audio/transcribe', upload.single('audio'), async (request, respon
   }
 });
 
-app.post('/api/reports/analyze', async (request, response) => {
+app.post('/api/reports/analyze', aiLimiter, requireAuth, async (request, response) => {
   const text = typeof request.body?.text === 'string' ? request.body.text.trim() : '';
   const language = typeof request.body?.language === 'string' ? request.body.language : 'auto';
   const date = typeof request.body?.date === 'string' ? request.body.date : new Date().toISOString().slice(0, 10);
@@ -619,6 +828,19 @@ app.post('/api/reports/analyze', async (request, response) => {
   }
 });
 
+app.use((_request, response) => {
+  response.status(404).json({error: 'Not found.'});
+});
+
+app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
+  console.error(error);
+  if (!isProduction && error instanceof Error) {
+    response.status(500).json({error: 'Internal server error.', detail: error.message});
+    return;
+  }
+  response.status(500).json({error: 'Internal server error.'});
+});
+
 app.listen(port, '0.0.0.0', () => {
-  console.log(`SiteOps AI API listening on http://0.0.0.0:${port}`);
+  console.log(`SiteOps AI API listening on port ${port}`);
 });

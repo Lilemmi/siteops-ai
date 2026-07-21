@@ -33,6 +33,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>UIFileSharingEnabled</key>
+	<false/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<false/>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>SiteOps AI uses selected photos to document construction progress in daily reports.</string>
 	<key>NSMicrophoneUsageDescription</key>

@@ -27,6 +27,7 @@ import {
 } from 'lucide-react-native';
 import {useTranslation} from 'react-i18next';
 import {getReports} from '../services/reportStorage';
+import {localizeText} from '../services/contentLocalization';
 import {
   buildTasks,
   deleteManualTask,
@@ -139,7 +140,7 @@ function localizedTaskText(task: SiteTask, field: 'title' | 'description' | 'ass
   }
 
   if (task.source !== 'demo') {
-    return task[field];
+    return localizeText(task[field], language);
   }
 
   const keyById: Record<string, {title: string; description: string; assignee: string}> = {

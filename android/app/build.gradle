@@ -57,7 +57,7 @@ react {
 /**
  * Set this to true to Run Proguard on Release builds to minify the Java bytecode.
  */
-def enableProguardInReleaseBuilds = false
+def enableProguardInReleaseBuilds = true
 
 /**
  * The preferred build flavor of JavaScriptCore (JSC)
@@ -92,15 +92,24 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            if (project.hasProperty('SITEOPS_UPLOAD_STORE_FILE')) {
+                storeFile file(SITEOPS_UPLOAD_STORE_FILE)
+                storePassword SITEOPS_UPLOAD_STORE_PASSWORD
+                keyAlias SITEOPS_UPLOAD_KEY_ALIAS
+                keyPassword SITEOPS_UPLOAD_KEY_PASSWORD
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // Never ship with the debug keystore. Provide SITEOPS_UPLOAD_* gradle properties for Play Store builds.
+            if (project.hasProperty('SITEOPS_UPLOAD_STORE_FILE')) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }

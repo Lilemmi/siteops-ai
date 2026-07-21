@@ -1,4 +1,4 @@
-import {API_BASE_URL} from '../config';
+import {apiFetch} from './apiClient';
 
 type Language = 'en' | 'ru' | 'he';
 
@@ -11,9 +11,8 @@ export async function translateFields<T extends Record<string, string>>(
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/api/translate/fields`, {
+    const response = await apiFetch('/api/translate/fields', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({fields}),
     });
 
